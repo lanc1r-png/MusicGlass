@@ -81,7 +81,7 @@ struct NowPlayingScreen: View {
 
     // Название и меню
 
-        private var titleRow: some View {
+            private var titleRow: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(player.currentTrack?.title ?? "Не играет")
@@ -95,20 +95,34 @@ struct NowPlayingScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let t = player.currentTrack {
-                FavoriteButton(track: t)
+                if OnlineID.isOnline(t) {
+                    OnlineFavoriteButton(track: t)
+                } else {
+                    FavoriteButton(track: t)
+                }
             }
 
             Menu {
-                Button {
-                    showEditor = true
-                } label: {
-                    Label("Найти данные и обложку", systemImage: "square.and.pencil")
-                }
-                .disabled(player.currentTrack == nil)
+                if let t = player.currentTrack, OnlineID.isOnline(t) {
+                    if let info = OnlineCatalog.shared.info(for: t),
+                       !info.artistHandle.isEmpty,
+                       let url = URL(string: "https://audius.co/\(info.artistHandle)") {
+                        Link(destination: url) {
+                            Label("Открыть исполнителя на Audius", systemImage: "safari")
+                        }
+                    }
+                } else {
+                    Button {
+                        showEditor = true
+                    } label: {
+                        Label("Найти данные и обложку", systemImage: "square.and.pencil")
+                    }
+                    .disabled(player.currentTrack == nil)
 
-                if let t = player.currentTrack, let url = library.url(for: t) {
-                    ShareLink(item: url) {
-                        Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                    if let t = player.currentTrack, let url = library.url(for: t) {
+                        ShareLink(item: url) {
+                            Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                        }
                     }
                 }
             } label: {
@@ -119,6 +133,7 @@ struct NowPlayingScreen: View {
             }
         }
     }
+
 
     // Управление
 
