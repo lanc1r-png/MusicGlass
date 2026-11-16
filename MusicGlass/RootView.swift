@@ -70,7 +70,7 @@ struct ArtworkView: View {
 
     var body: some View {
         ArtworkImage(image: image, corner: corner)
-            .task(id: track?.id) {
+            .task(id: "\(track?.id ?? "")|\(library.artworkVersion)") {
                 image = nil
                 guard let track, let url = library.url(for: track) else { return }
                 image = await ArtworkLoader.shared.image(for: track, url: url, maxSize: maxPixels)
