@@ -81,8 +81,8 @@ struct NowPlayingScreen: View {
 
     // Название и меню
 
-    private var titleRow: some View {
-        HStack(alignment: .center, spacing: 12) {
+        private var titleRow: some View {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(player.currentTrack?.title ?? "Не играет")
                     .font(.title2.weight(.bold))
@@ -93,6 +93,10 @@ struct NowPlayingScreen: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let t = player.currentTrack {
+                FavoriteButton(track: t)
+            }
 
             Menu {
                 Button {
