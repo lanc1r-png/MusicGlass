@@ -37,9 +37,89 @@ struct OnlineCover: View {
     }
 }
 
+// MARK: - Кнопки «Играть» и «Вперемешку»
+
+struct OnlinePlayButtons: View {
+    @EnvironmentObject var player: PlayerStore
+    let tracks: [OnlineTrack]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                if player.shuffleOn { player.toggleShuffle() }
+                playOnline(tracks, at: 0, player: player)
+            } label: {
+                Label("Играть", systemImage: "play.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            Button {
+                OnlineCatalog.shared.register(tracks)
+                player.playShuffled(tracks.map { $0.asTrack })
+            } label: {
+                Label("Вперемешку", systemImage: "shuffle")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .tint(.pink)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+}
+
+// MARK: - Действия над онлайн-треком
+
+struct OnlineTrackActions: View {
+    @ObservedObject private var lib = OnlineLibrary.shared
+    let track: OnlineTrack
+    @Binding var showNewPlaylist: Bool
+
+    var body: some View {
+        Button {
+            lib.toggleFavorite(track)
+        } label: {
+            Label(lib.isFavorite(track.id) ? "Убрать из избранного" : "В избранное",
+                  systemImage: lib.isFavorite(track.id) ? "heart.slash" : "heart")
+        }
+
+        Menu {
+            Button {
+                showNewPlaylist = true
+            } label: {
+                Label("Новый плейлист…", systemImage: "plus")
+            }
+            if !lib.playlists.isEmpty {
+                Divider()
+                ForEach(lib.playlists) { p in
+                    Button(p.name) {
+                        lib.add(track, to: p.id)
+                    }
+                }
+            }
+        } label: {
+            Label("Добавить в плейлист", systemImage: "text.badge.plus")
+        }
+
+        if !track.artistHandle.isEmpty,
+           let url = URL(string: "https://audius.co/\(track.artistHandle)") {
+            Link(destination: url) {
+                Label("Открыть исполнителя на Audius", systemImage: "safari")
+            }
+        }
+    }
+}
+
+// MARK: - Строка онлайн-трека
+
 struct OnlineTrackRow: View {
     @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var lib = OnlineLibrary.shared
     let track: OnlineTrack
+    @State private var showNewPlaylist = false
+    @State private var newName = ""
 
     var body: some View {
         let isCurrent = player.currentTrack?.id == track.playerID
@@ -67,19 +147,42 @@ struct OnlineTrackRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+
+            if lib.isFavorite(track.id) {
+                Image(systemName: "heart.fill")
+                    .font(.caption)
+                    .foregroundStyle(.pink)
+            }
             Text(onlineTime(track.duration))
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
+
+            Menu {
+                OnlineTrackActions(track: track, showNewPlaylist: $showNewPlaylist)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 40)
+                    .contentShape(Rectangle())
+            }
         }
         .contentShape(Rectangle())
         .contextMenu {
-            if !track.artistHandle.isEmpty,
-               let url = URL(string: "https://audius.co/\(track.artistHandle)") {
-                Link(destination: url) {
-                    Label("Открыть исполнителя на Audius", systemImage: "safari")
-                }
-            }
+            OnlineTrackActions(track: track, showNewPlaylist: $showNewPlaylist)
         }
+        .alert("Новый плейлист", isPresented: $showNewPlaylist) {
+            TextField("Название", text: $newName)
+            Button("Создать") { createAndAdd() }
+            Button("Отмена", role: .cancel) { newName = "" }
+        }
+    }
+
+    private func createAndAdd() {
+        let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        newName = ""
+        guard !n.isEmpty else { return }
+        let id = lib.createPlaylist(name: n)
+        lib.add(track, to: id)
     }
 }
 
@@ -146,8 +249,30 @@ enum OnlineScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private struct OnlineCategoryRow: View {
+    let title: String
+    let icon: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 20))
+                .foregroundStyle(Color.pink)
+                .frame(width: 30)
+            Text(title)
+                .font(.title3)
+            Spacer()
+            Text("\(count)")
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
 struct OnlineView: View {
     @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var lib = OnlineLibrary.shared
     @StateObject private var model = OnlineModel()
     @State private var query = ""
     @State private var scope: OnlineScope = .tracks
@@ -158,9 +283,8 @@ struct OnlineView: View {
 
     private var isSearching: Bool { !trimmedQuery.isEmpty }
 
-    private var currentListEmpty: Bool {
-        if !isSearching { return model.trending.isEmpty }
-        return scope == .tracks ? model.tracks.isEmpty : model.artists.isEmpty
+    private var searchListEmpty: Bool {
+        scope == .tracks ? model.tracks.isEmpty : model.artists.isEmpty
     }
 
     var body: some View {
@@ -186,14 +310,45 @@ struct OnlineView: View {
                             }
                         }
                     }
-                } else if !model.trending.isEmpty {
+                } else {
                     Section {
-                        trackRows(model.trending)
-                    } header: {
-                        Text("В тренде")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(.primary)
-                            .textCase(nil)
+                        NavigationLink {
+                            OnlineFavoritesView()
+                        } label: {
+                            OnlineCategoryRow(title: "Избранное", icon: "heart.fill",
+                                              count: lib.favorites.count)
+                        }
+                        NavigationLink {
+                            OnlinePlaylistsView()
+                        } label: {
+                            OnlineCategoryRow(title: "Плейлисты", icon: "music.note.list",
+                                              count: lib.playlists.count)
+                        }
+                    }
+
+                    if !model.trending.isEmpty {
+                        Section {
+                            trackRows(model.trending)
+                        } header: {
+                            Text("В тренде")
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(.primary)
+                                .textCase(nil)
+                        }
+                    } else if model.isLoading {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Загружаю тренды…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let e = model.errorText {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(e, systemImage: "wifi.slash")
+                                .foregroundStyle(.secondary)
+                            Button("Повторить") {
+                                Task { await model.loadTrending(force: true) }
+                            }
+                        }
                     }
                 }
 
@@ -215,7 +370,7 @@ struct OnlineView: View {
             .searchable(text: $query, prompt: "Треки и исполнители")
             .onChange(of: query) { _, new in model.search(new) }
             .task { await model.loadTrending() }
-            .overlay { stateOverlay }
+            .overlay { searchOverlay }
             .alert("Не удалось воспроизвести",
                    isPresented: Binding(
                     get: { player.playbackError != nil },
@@ -251,26 +406,24 @@ struct OnlineView: View {
         }
     }
 
+    /// Состояния только для режима поиска. Главный экран показывает их прямо в списке,
+    /// чтобы «Избранное» и «Плейлисты» были доступны даже без интернета.
     @ViewBuilder
-    private var stateOverlay: some View {
-        if let e = model.errorText, currentListEmpty {
-            ContentUnavailableView {
-                Label("Не получилось загрузить", systemImage: "wifi.slash")
-            } description: {
-                Text(e)
-            } actions: {
-                Button("Повторить") {
-                    if isSearching {
-                        model.search(query)
-                    } else {
-                        Task { await model.loadTrending(force: true) }
-                    }
+    private var searchOverlay: some View {
+        if isSearching {
+            if let e = model.errorText, searchListEmpty {
+                ContentUnavailableView {
+                    Label("Не получилось загрузить", systemImage: "wifi.slash")
+                } description: {
+                    Text(e)
+                } actions: {
+                    Button("Повторить") { model.search(query) }
                 }
+            } else if model.isLoading && searchListEmpty {
+                ProgressView()
+            } else if !model.isLoading && searchListEmpty {
+                ContentUnavailableView.search(text: query)
             }
-        } else if model.isLoading && currentListEmpty {
-            ProgressView()
-        } else if isSearching && !model.isLoading && currentListEmpty {
-            ContentUnavailableView.search(text: query)
         }
     }
 }
@@ -305,29 +458,7 @@ struct ArtistDetailView: View {
             .listRowBackground(Color.clear)
 
             if !tracks.isEmpty {
-                HStack(spacing: 12) {
-                    Button {
-                        if player.shuffleOn { player.toggleShuffle() }
-                        playOnline(tracks, at: 0, player: player)
-                    } label: {
-                        Label("Играть", systemImage: "play.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    Button {
-                        OnlineCatalog.shared.register(tracks)
-                        player.playShuffled(tracks.map { $0.asTrack })
-                    } label: {
-                        Label("Вперемешку", systemImage: "shuffle")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .buttonStyle(.glass)
-                .controlSize(.large)
-                .tint(.pink)
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                OnlinePlayButtons(tracks: tracks)
 
                 ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                     OnlineTrackRow(track: track)
