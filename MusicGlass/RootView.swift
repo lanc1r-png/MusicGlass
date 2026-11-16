@@ -12,9 +12,10 @@ struct RootView: View {
             Tab("Медиатека", systemImage: "music.note.list") {
                 LibraryView()
             }
-            Tab("Папки", systemImage: "folder") {
-                FoldersView()
+                        Tab("Источники", systemImage: "folder") {
+                SourcesView()
             }
+
             Tab("Поиск", systemImage: "magnifyingglass", role: .search) {
                 SearchView()
             }
