@@ -1,5 +1,4 @@
 import SwiftUI
-import AVKit
 
 // MARK: - Корень приложения
 
@@ -71,4 +70,8 @@ struct ArtworkView: View {
         ArtworkImage(image: image, corner: corner)
             .task(id: "\(track?.id ?? "")|\(library.artworkVersion)") {
                 image = nil
-                guard let track,
+                guard let track, let url = library.url(for: track) else { return }
+                image = await ArtworkLoader.shared.image(for: track, url: url, maxSize: maxPixels)
+            }
+    }
+}
