@@ -327,12 +327,15 @@ struct FoldersView: View {
                 }
             }
             .navigationTitle("Папки")
-            .fileImporter(isPresented: $showPicker,
-                          allowedContentTypes: [.folder],
-                          allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result {
-                    library.addFolders(urls)
-                }
+            .sheet(isPresented: $showPicker) {
+                FolderPicker(
+                    onPick: { urls in
+                        library.addFolders(urls)
+                        showPicker = false
+                    },
+                    onCancel: { showPicker = false }
+                )
+                .ignoresSafeArea()
             }
         }
     }
