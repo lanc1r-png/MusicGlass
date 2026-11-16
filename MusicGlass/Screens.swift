@@ -49,6 +49,7 @@ struct LibraryView: View {
 struct TrackRow: View {
     let track: Track
     let isCurrent: Bool
+    @State private var showEditor = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -67,6 +68,21 @@ struct TrackRow: View {
             if isCurrent {
                 Image(systemName: "waveform").foregroundStyle(.pink)
             }
+            Menu {
+                Button {
+                    showEditor = true
+                } label: {
+                    Label("Найти данные и обложку", systemImage: "square.and.pencil")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+        }
+        .sheet(isPresented: $showEditor) {
+            TagEditorView(track: track)
         }
     }
 }
