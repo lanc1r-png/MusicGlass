@@ -1,0 +1,32 @@
+name: MusicGlass
+options:
+  bundleIdPrefix: dev.musicglass
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  MusicGlass:
+    type: application
+    platform: iOS
+    sources:
+      - MusicGlass
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.musicglass.app
+        TARGETED_DEVICE_FAMILY: "1"
+    info:
+      path: MusicGlass/Info.plist
+      properties:
+        CFBundleDisplayName: MusicGlass
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
