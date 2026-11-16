@@ -18,10 +18,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.musicglass.app
         TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: MusicGlass/Info.plist
       properties:
-        CFBundleDisplayName: MusicGlass
+        CFBundleDisplayName: Opal
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
