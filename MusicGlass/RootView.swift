@@ -11,6 +11,9 @@ struct RootView: View {
             Tab("Медиатека", systemImage: "music.note.list") {
                 LibraryView()
             }
+            Tab("Онлайн", systemImage: "cloud") {
+                OnlineView()
+            }
             Tab("Источники", systemImage: "folder") {
                 SourcesView()
             }
@@ -58,7 +61,7 @@ struct ArtworkImage: View {
     }
 }
 
-/// Обложка трека, которая подгружается из тегов файла.
+/// Обложка трека: из тегов файла или (для онлайн-треков) из сети.
 struct ArtworkView: View {
     @EnvironmentObject var library: LibraryStore
     let track: Track?
@@ -70,7 +73,12 @@ struct ArtworkView: View {
         ArtworkImage(image: image, corner: corner)
             .task(id: "\(track?.id ?? "")|\(library.artworkVersion)") {
                 image = nil
-                guard let track, let url = library.url(for: track) else { return }
+                guard let track else { return }
+                if OnlineID.isOnline(track) {
+                    image = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkMedium)
+                    return
+                }
+                guard let url = library.url(for: track) else { return }
                 image = await ArtworkLoader.shared.image(for: track, url: url, maxSize: maxPixels)
             }
     }
