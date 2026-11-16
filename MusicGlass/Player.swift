@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import MediaPlayer
 import UIKit
+import Combine
 
 enum RepeatMode { case off, all, one }
 
@@ -19,6 +20,8 @@ final class PlayerStore: ObservableObject {
     @Published private(set) var artwork: UIImage?
     @Published private(set) var shuffleOn = false
     @Published var repeatMode: RepeatMode = .off
+    /// Текст ошибки воспроизведения (недоступный трек, нет сети).
+    @Published var playbackError: String?
 
     let clock = PlayerClock()
 
@@ -27,6 +30,7 @@ final class PlayerStore: ObservableObject {
     private var originalQueue: [Track] = []
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    private var statusObserver: AnyCancellable?
 
     var currentTrack: Track? {
         guard let i = currentIndex, queue.indices.contains(i) else { return nil }
@@ -148,12 +152,41 @@ final class PlayerStore: ObservableObject {
     // MARK: Внутреннее
 
     private func loadCurrent(autoplay: Bool) {
-        guard let track = currentTrack, let url = library?.url(for: track) else {
+        guard let track = currentTrack else {
             pause()
             return
         }
+
+        // Откуда играть: из сети (Audius) или из файла.
+        let url: URL
+        let localURL: URL?
+        let isOnline = OnlineID.isOnline(track)
+        if isOnline {
+            guard let u = AudiusAPI.streamURL(trackID: OnlineID.audiusID(of: track)) else {
+                pause()
+                return
+            }
+            url = u
+            localURL = nil
+        } else if let u = library?.url(for: track) {
+            url = u
+            localURL = u
+        } else {
+            pause()
+            return
+        }
+
+        playbackError = nil
         let item = AVPlayerItem(url: url)
         player.replaceCurrentItem(with: item)
+
+        // Ошибка загрузки (трек недоступен, нет сети)
+        statusObserver = item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard status == .failed else { return }
+                Task { @MainActor in self?.handleFailure(online: isOnline) }
+            }
 
         if let o = endObserver { NotificationCenter.default.removeObserver(o) }
         endObserver = NotificationCenter.default.addObserver(
@@ -172,12 +205,26 @@ final class PlayerStore: ObservableObject {
         updateNowPlaying()
 
         Task {
-            let img = await ArtworkLoader.shared.image(for: track, url: url, maxSize: 900)
+            let img: UIImage?
+            if let localURL {
+                img = await ArtworkLoader.shared.image(for: track, url: localURL, maxSize: 900)
+            } else {
+                img = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkLarge)
+            }
             if self.currentTrack?.id == track.id {
                 self.artwork = img
                 self.updateNowPlaying()
             }
         }
+    }
+
+    private func handleFailure(online: Bool) {
+        player.pause()
+        isPlaying = false
+        playbackError = online
+            ? "Не удалось воспроизвести трек. Проверьте интернет или выберите другой: он мог стать недоступным."
+            : "Не удалось открыть файл."
+        updateNowPlaying()
     }
 
     private func trackEnded() {
