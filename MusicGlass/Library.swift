@@ -18,6 +18,8 @@ struct MusicFolder: Identifiable, Codable, Hashable {
     let id: String
     var name: String
     var bookmark: Data
+    /// true, если источник — отдельный файл, а не папка
+    var isFile: Bool? = nil
 }
 
 struct Album: Identifiable, Hashable {
@@ -53,7 +55,13 @@ enum LibraryScanner {
         return result
     }
 
-    static func scan(folderID: String, root: URL, existing: [String: Track]) async -> [Track] {
+    static func scan(folderID: String, root: URL, isFile: Bool, existing: [String: Track]) async -> [Track] {
+        if isFile {
+            let id = folderID + "/"
+            if let old = existing[id] { return [old] }
+            return [await readTrack(id: id, folderID: folderID, rel: "", file: root)]
+        }
+
         let files = listFiles(in: root)
         let rootPath = root.standardizedFileURL.path
         var out: [Track] = []
@@ -132,6 +140,9 @@ final class LibraryStore: ObservableObject {
     static let localID = "local"
     private var roots: [String: URL] = [:]
 
+    var folderSources: [MusicFolder] { folders.filter { $0.isFile != true } }
+    var fileSourceCount: Int { folders.filter { $0.isFile == true }.count }
+
     private var supportDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
@@ -147,12 +158,21 @@ final class LibraryStore: ObservableObject {
     }
 
     func url(for track: Track) -> URL? {
-        roots[track.folderID]?.appendingPathComponent(track.relativePath)
+        guard let root = roots[track.folderID] else { return nil }
+        return track.relativePath.isEmpty ? root : root.appendingPathComponent(track.relativePath)
     }
 
-    // Папки
+    // Папки и файлы
 
     func addFolders(_ urls: [URL]) {
+        add(urls, isFile: false)
+    }
+
+    func addFiles(_ urls: [URL]) {
+        add(urls, isFile: true)
+    }
+
+    private func add(_ urls: [URL], isFile: Bool) {
         for url in urls {
             guard url.startAccessingSecurityScopedResource() else { continue }
             let path = url.standardizedFileURL.path
@@ -161,7 +181,8 @@ final class LibraryStore: ObservableObject {
                 url.stopAccessingSecurityScopedResource()
                 continue
             }
-            let folder = MusicFolder(id: UUID().uuidString, name: url.lastPathComponent, bookmark: data)
+            let name = isFile ? url.deletingPathExtension().lastPathComponent : url.lastPathComponent
+            let folder = MusicFolder(id: UUID().uuidString, name: name, bookmark: data, isFile: isFile ? true : nil)
             folders.append(folder)
             roots[folder.id] = url
         }
@@ -178,6 +199,19 @@ final class LibraryStore: ObservableObject {
         saveTracks()
     }
 
+    func removeAllFiles() {
+        let files = folders.filter { $0.isFile == true }
+        for f in files {
+            roots[f.id]?.stopAccessingSecurityScopedResource()
+            roots[f.id] = nil
+        }
+        let ids = Set(files.map { $0.id })
+        folders.removeAll { ids.contains($0.id) }
+        tracks = tracks.filter { !ids.contains($0.folderID) }
+        saveFolders()
+        saveTracks()
+    }
+
     // Сканирование
 
     func rescan() async {
@@ -186,15 +220,15 @@ final class LibraryStore: ObservableObject {
         defer { isScanning = false }
 
         let existing = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var sources: [(String, URL)] = []
-        if let docs = roots[Self.localID] { sources.append((Self.localID, docs)) }
+        var sources: [(String, URL, Bool)] = []
+        if let docs = roots[Self.localID] { sources.append((Self.localID, docs, false)) }
         for f in folders {
-            if let u = roots[f.id] { sources.append((f.id, u)) }
+            if let u = roots[f.id] { sources.append((f.id, u, f.isFile == true)) }
         }
 
         var all: [Track] = []
-        for (id, url) in sources {
-            let found = await LibraryScanner.scan(folderID: id, root: url, existing: existing)
+        for (id, url, isFile) in sources {
+            let found = await LibraryScanner.scan(folderID: id, root: url, isFile: isFile, existing: existing)
             all.append(contentsOf: found)
             tracks = all
         }
@@ -224,12 +258,20 @@ final class LibraryStore: ObservableObject {
     private func rebuildGroups() {
         var buckets: [String: [Track]] = [:]
         for t in tracks {
-            let dir = (t.relativePath as NSString).deletingLastPathComponent
-            buckets[t.album + "|" + t.folderID + "/" + dir, default: []].append(t)
+            let key: String
+            if t.relativePath.isEmpty {
+                key = t.album + "|files"
+            } else {
+                let dir = (t.relativePath as NSString).deletingLastPathComponent
+                key = t.album + "|" + t.folderID + "/" + dir
+            }
+            buckets[key, default: []].append(t)
         }
         albums = buckets.map { key, group -> Album in
             let sorted = group.sorted {
-                $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+                let a = $0.relativePath.isEmpty ? $0.title : $0.relativePath
+                let b = $1.relativePath.isEmpty ? $1.title : $1.relativePath
+                return a.localizedStandardCompare(b) == .orderedAscending
             }
             let names = Set(sorted.map { $0.artist })
             let artist = names.count == 1 ? sorted[0].artist : "Разные исполнители"
@@ -238,7 +280,7 @@ final class LibraryStore: ObservableObject {
 
         artists = Dictionary(grouping: tracks, by: { $0.artist }).map { name, group -> Artist in
             let sorted = group.sorted {
-                ($0.album + $0.relativePath).localizedStandardCompare($1.album + $1.relativePath) == .orderedAscending
+                ($0.album + $0.title).localizedStandardCompare($1.album + $1.title) == .orderedAscending
             }
             return Artist(id: name, name: name, tracks: sorted)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
