@@ -108,6 +108,10 @@ final class ArtworkLoader: @unchecked Sendable {
     static let shared = ArtworkLoader()
     private let cache = NSCache<NSString, UIImage>()
 
+    func clear() {
+        cache.removeAllObjects()
+    }
+
     func image(for track: Track, url: URL, maxSize: CGFloat) async -> UIImage? {
         let key = "\(track.id)|\(Int(maxSize))" as NSString
         if let hit = cache.object(forKey: key) { return hit }
@@ -136,6 +140,7 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var albums: [Album] = []
     @Published private(set) var artists: [Artist] = []
     @Published private(set) var isScanning = false
+    @Published private(set) var artworkVersion = 0
 
     static let localID = "local"
     private var roots: [String: URL] = [:]
@@ -160,6 +165,18 @@ final class LibraryStore: ObservableObject {
     func url(for track: Track) -> URL? {
         guard let root = roots[track.folderID] else { return nil }
         return track.relativePath.isEmpty ? root : root.appendingPathComponent(track.relativePath)
+    }
+
+    /// Применяет новые данные к треку после записи тегов в файл.
+    func applyMetadata(trackID: String, title: String, artist: String, album: String) {
+        guard let i = tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        var t = tracks[i]
+        if !title.isEmpty { t.title = title }
+        if !artist.isEmpty { t.artist = artist }
+        if !album.isEmpty { t.album = album }
+        tracks[i] = t
+        artworkVersion += 1
+        saveTracks()
     }
 
     // Папки и файлы
