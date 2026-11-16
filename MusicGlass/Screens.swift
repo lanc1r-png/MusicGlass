@@ -1,62 +1,54 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
-// MARK: - Медиатека
+// MARK: - Действия над треком (одни и те же для «⋯» и долгого нажатия)
 
-struct LibraryView: View {
-    @EnvironmentObject var library: LibraryStore
+struct TrackActionButtons: View {
+    @ObservedObject private var favorites = FavoritesStore.shared
+    let track: Track
+    @Binding var showEditor: Bool
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if library.tracks.isEmpty {
-                    if library.isScanning {
-                        ProgressView("Сканирую музыку…")
-                    } else {
-                        ContentUnavailableView(
-                            "Пока пусто",
-                            systemImage: "folder.badge.plus",
-                            description: Text("Добавьте папки с музыкой на вкладке «Папки».")
-                        )
-                    }
-                } else {
-                    List {
-                        NavigationLink {
-                            SongsView(title: "Песни", tracks: library.tracks)
-                        } label: {
-                            Label("Песни", systemImage: "music.note")
-                        }
-                        NavigationLink {
-                            AlbumsView()
-                        } label: {
-                            Label("Альбомы", systemImage: "square.stack")
-                        }
-                        NavigationLink {
-                            ArtistsView()
-                        } label: {
-                            Label("Исполнители", systemImage: "music.mic")
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Медиатека")
+        Button {
+            favorites.toggle(track)
+        } label: {
+            Label(favorites.contains(track) ? "Убрать из избранного" : "В избранное",
+                  systemImage: favorites.contains(track) ? "heart.slash" : "heart")
+        }
+        Button {
+            showEditor = true
+        } label: {
+            Label("Найти данные и обложку", systemImage: "square.and.pencil")
         }
     }
 }
 
-// MARK: - Песни
+// MARK: - Строка трека
 
 struct TrackRow: View {
+    @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var favorites = FavoritesStore.shared
     let track: Track
     let isCurrent: Bool
     @State private var showEditor = false
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(track: track, corner: 6, maxPixels: 150)
-                .frame(width: 48, height: 48)
+            ZStack {
+                ArtworkView(track: track, corner: 8, maxPixels: 160)
+                if isCurrent {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.black.opacity(0.4))
+                    Image(systemName: "waveform")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                }
+            }
+            .frame(width: 52, height: 52)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
+                    .font(.body)
                     .lineLimit(1)
                     .foregroundStyle(isCurrent ? Color.pink : Color.primary)
                 Text(track.artist)
@@ -64,22 +56,25 @@ struct TrackRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer()
-            if isCurrent {
-                Image(systemName: "waveform").foregroundStyle(.pink)
+            Spacer(minLength: 4)
+
+            if favorites.contains(track) {
+                Image(systemName: "heart.fill")
+                    .font(.caption)
+                    .foregroundStyle(.pink)
             }
+
             Menu {
-                Button {
-                    showEditor = true
-                } label: {
-                    Label("Найти данные и обложку", systemImage: "square.and.pencil")
-                }
+                TrackActionButtons(track: track, showEditor: $showEditor)
             } label: {
                 Image(systemName: "ellipsis")
                     .foregroundStyle(.secondary)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 32, height: 40)
                     .contentShape(Rectangle())
             }
+        }
+        .contextMenu {
+            TrackActionButtons(track: track, showEditor: $showEditor)
         }
         .sheet(isPresented: $showEditor) {
             TagEditorView(track: track)
@@ -87,29 +82,7 @@ struct TrackRow: View {
     }
 }
 
-struct PlayShuffleButtons: View {
-    @EnvironmentObject var player: PlayerStore
-    let tracks: [Track]
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                player.play(tracks, startAt: 0)
-            } label: {
-                Label("Играть", systemImage: "play.fill").frame(maxWidth: .infinity)
-            }
-            Button {
-                player.playShuffled(tracks)
-            } label: {
-                Label("Вперемешку", systemImage: "shuffle").frame(maxWidth: .infinity)
-            }
-        }
-        .buttonStyle(.glass)
-        .controlSize(.large)
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-    }
-}
+// MARK: - Песни
 
 struct SongsView: View {
     @EnvironmentObject var player: PlayerStore
@@ -117,107 +90,26 @@ struct SongsView: View {
     let tracks: [Track]
 
     var body: some View {
-        List {
-            if !tracks.isEmpty {
-                PlayShuffleButtons(tracks: tracks)
-            }
-            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
-                    .contentShape(Rectangle())
-                    .onTapGesture { player.play(tracks, startAt: index) }
+        Group {
+            if tracks.isEmpty {
+                ContentUnavailableView("Здесь пока пусто", systemImage: "music.note")
+            } else {
+                List {
+                    PlayShuffleButtons(tracks: tracks)
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Haptics.tap()
+                                player.play(tracks, startAt: index)
+                            }
+                    }
+                }
+                .listStyle(.plain)
             }
         }
-        .listStyle(.plain)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-// MARK: - Альбомы
-
-struct AlbumCard: View {
-    let album: Album
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ArtworkView(track: album.tracks.first, corner: 12, maxPixels: 500)
-            Text(album.title)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-            Text(album.artist)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-}
-
-struct AlbumsView: View {
-    @EnvironmentObject var library: LibraryStore
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
-
-    var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 20) {
-                ForEach(library.albums) { album in
-                    NavigationLink {
-                        AlbumDetailView(album: album)
-                    } label: {
-                        AlbumCard(album: album)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        .navigationTitle("Альбомы")
-    }
-}
-
-struct AlbumDetailView: View {
-    @EnvironmentObject var player: PlayerStore
-    let album: Album
-
-    var body: some View {
-        List {
-            VStack(spacing: 8) {
-                ArtworkView(track: album.tracks.first, corner: 16, maxPixels: 800)
-                    .frame(width: 240, height: 240)
-                    .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
-                Text(album.title)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                Text(album.artist)
-                    .foregroundStyle(.pink)
-            }
-            .frame(maxWidth: .infinity)
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-
-            PlayShuffleButtons(tracks: album.tracks)
-
-            ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
-                HStack(spacing: 12) {
-                    Text("\(index + 1)")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .lineLimit(1)
-                            .foregroundStyle(player.currentTrack?.id == track.id ? Color.pink : Color.primary)
-                        Text(track.artist)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { player.play(album.tracks, startAt: index) }
-            }
-        }
-        .listStyle(.plain)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
     }
 }
 
@@ -232,8 +124,8 @@ struct ArtistsView: View {
                 SongsView(title: artist.name, tracks: artist.tracks)
             } label: {
                 HStack(spacing: 12) {
-                    ArtworkView(track: artist.tracks.first, corner: 24, maxPixels: 150)
-                        .frame(width: 48, height: 48)
+                    ArtworkView(track: artist.tracks.first, corner: 26, maxPixels: 160)
+                        .frame(width: 52, height: 52)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(artist.name).lineLimit(1)
                         Text("\(artist.tracks.count) песен")
@@ -245,6 +137,7 @@ struct ArtistsView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Исполнители")
+        .navigationBarTitleDisplayMode(.large)
     }
 }
 
@@ -281,7 +174,10 @@ struct SearchView: View {
                         ForEach(Array(list.enumerated()), id: \.element.id) { index, track in
                             TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
                                 .contentShape(Rectangle())
-                                .onTapGesture { player.play(list, startAt: index) }
+                                .onTapGesture {
+                                    Haptics.tap()
+                                    player.play(list, startAt: index)
+                                }
                         }
                     }
                     .listStyle(.plain)
@@ -289,70 +185,6 @@ struct SearchView: View {
             }
             .navigationTitle("Поиск")
             .searchable(text: $query, prompt: "Песни, альбомы, исполнители")
-        }
-    }
-}
-
-// MARK: - Папки
-
-struct FoldersView: View {
-    @EnvironmentObject var library: LibraryStore
-    @State private var showPicker = false
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(library.folders) { folder in
-                        Label(folder.name, systemImage: "folder")
-                    }
-                    .onDelete { offsets in
-                        let items = offsets.map { library.folders[$0] }
-                        for item in items { library.removeFolder(item) }
-                    }
-                    Button {
-                        showPicker = true
-                    } label: {
-                        Label("Добавить папку", systemImage: "folder.badge.plus")
-                    }
-                } header: {
-                    Text("Папки с музыкой")
-                } footer: {
-                    Text("Выберите папки в приложении «Файлы». Музыка читается прямо из них, копировать ничего не нужно. Свайп влево удаляет папку из списка (сами файлы не трогаются).")
-                }
-
-                Section {
-                    HStack {
-                        Text("Треков в медиатеке")
-                        Spacer()
-                        Text("\(library.tracks.count)").foregroundStyle(.secondary)
-                    }
-                    Button {
-                        Task { await library.rescan() }
-                    } label: {
-                        if library.isScanning {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text("Сканирую…")
-                            }
-                        } else {
-                            Label("Обновить медиатеку", systemImage: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(library.isScanning)
-                }
-            }
-            .navigationTitle("Папки")
-            .sheet(isPresented: $showPicker) {
-                FolderPicker(
-                    onPick: { urls in
-                        library.addFolders(urls)
-                        showPicker = false
-                    },
-                    onCancel: { showPicker = false }
-                )
-                .ignoresSafeArea()
-            }
         }
     }
 }
