@@ -11,6 +11,42 @@ struct MetaCandidate: Identifiable {
     var coverURL: URL?
     var thumbURL: URL?
     var source: String
+    /// Для Deezer: id альбома, чтобы дозагрузить год и жанр.
+    var deezerAlbumID: Int? = nil
+}
+
+private struct DeezerSearch: Decodable {
+    let data: [DeezerTrack]?
+}
+
+private struct DeezerTrack: Decodable {
+    let title: String?
+    let artist: DeezerArtist?
+    let album: DeezerAlbumShort?
+}
+
+private struct DeezerArtist: Decodable {
+    let name: String?
+}
+
+private struct DeezerAlbumShort: Decodable {
+    let id: Int?
+    let title: String?
+    let cover_medium: String?
+    let cover_xl: String?
+}
+
+private struct DeezerAlbum: Decodable {
+    let release_date: String?
+    let genres: DeezerGenres?
+}
+
+private struct DeezerGenres: Decodable {
+    let data: [DeezerGenre]?
+}
+
+private struct DeezerGenre: Decodable {
+    let name: String?
 }
 
 private struct ITunesResponse: Decodable {
@@ -145,6 +181,46 @@ enum MetadataSearch {
             }
         }
         return out
+    }
+
+    // MARK: Deezer (открытый поиск без ключа, обложки до 1000×1000)
+
+    static func deezer(_ query: String) async throws -> [MetaCandidate] {
+        var comps = URLComponents(string: "https://api.deezer.com/search")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: "30")
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.timeoutInterval = 15
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let decoded = try JSONDecoder().decode(DeezerSearch.self, from: data)
+        var seen = Set<String>()
+        return (decoded.data ?? []).compactMap { t -> MetaCandidate? in
+            guard let title = t.title else { return nil }
+            let artist = t.artist?.name ?? ""
+            let album = t.album?.title ?? ""
+            guard seen.insert("\(title)|\(artist)|\(album)".lowercased()).inserted else { return nil }
+            return MetaCandidate(
+                title: title,
+                artist: artist,
+                album: album,
+                year: "",
+                genre: "",
+                coverURL: t.album?.cover_xl.flatMap { URL(string: $0) },
+                thumbURL: t.album?.cover_medium.flatMap { URL(string: $0) },
+                source: "Deezer",
+                deezerAlbumID: t.album?.id
+            )
+        }
+    }
+
+    /// Год и жанр альбома Deezer (в поиске их нет).
+    static func deezerAlbumInfo(_ id: Int) async -> (year: String, genre: String)? {
+        guard let url = URL(string: "https://api.deezer.com/album/\(id)"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let a = try? JSONDecoder().decode(DeezerAlbum.self, from: data) else { return nil }
+        return (String((a.release_date ?? "").prefix(4)), a.genres?.data?.first?.name ?? "")
     }
 
     // MARK: Обложка
