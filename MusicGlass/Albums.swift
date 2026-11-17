@@ -63,6 +63,7 @@ struct AlbumCard: View {
             } label: {
                 Label("Вперемешку", systemImage: "shuffle")
             }
+            AddToCategoryMenu(tracks: album.tracks)
         }
     }
 }

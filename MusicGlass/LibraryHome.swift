@@ -1,5 +1,6 @@
 import SwiftUI
 
+// Старая строка категории (может использоваться на других экранах, оставлена как есть).
 struct CategoryRow: View {
     let title: String
     let icon: String
@@ -26,12 +27,51 @@ struct CategoryRow: View {
     }
 }
 
+// MARK: - Строка категории в стиле Apple Music
+
+struct LibraryCategoryLabel: View {
+    let item: LibraryCategory
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: item.icon)
+                .font(.system(size: 22))
+                .foregroundStyle(CategoryPalette.color(item.colorName))
+                .frame(width: 30)
+            Text(item.title)
+                .font(.title3)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if let detail {
+                Text(detail)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Медиатека
+
 struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var layout = LibraryLayout.shared
+    @AppStorage("profileName") private var profileName = ""
+
     @State private var recent: [Album] = []
+    @State private var editMode: EditMode = .inactive
+    @State private var showNewCategory = false
+    @State private var editingCategory: LibraryCategory?
+    @State private var deletingCategory: LibraryCategory?
+    @State private var showProfile = false
+    @State private var showAllAlbums = false
+    @State private var openAlbum: Album.ID?
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+    private var editing: Bool { editMode.isEditing }
 
     var body: some View {
         NavigationStack {
@@ -51,69 +91,198 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Медиатека")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
+            .toolbar { toolbarContent }
+            .navigationDestination(isPresented: $showAllAlbums) { AlbumsView() }
+            .navigationDestination(item: $openAlbum) { id in
+                if let album = library.albums.first(where: { $0.id == id }) {
+                    AlbumDetailView(album: album)
+                }
+            }
+        }
+        .sheet(isPresented: $showNewCategory) { CategoryEditorView(existing: nil) }
+        .sheet(item: $editingCategory) { CategoryEditorView(existing: $0) }
+        .sheet(isPresented: $showProfile) { ProfileView() }
+        .alert("Удалить категорию «\(deletingCategory?.title ?? "")»?",
+               isPresented: Binding(get: { deletingCategory != nil },
+                                    set: { if !$0 { deletingCategory = nil } })) {
+            Button("Удалить", role: .destructive) {
+                if let c = deletingCategory { layout.delete(c.id) }
+                deletingCategory = nil
+            }
+            Button("Отмена", role: .cancel) { deletingCategory = nil }
+        } message: {
+            Text("Сами песни останутся в медиатеке.")
         }
         .task(id: library.albums.count) { await loadRecent() }
     }
 
+    // MARK: Верхние кнопки
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                showNewCategory = true
+            } label: {
+                Image(systemName: "text.badge.plus")
+            }
+            Button {
+                Haptics.tap()
+                withAnimation(.snappy) {
+                    editMode = editing ? .inactive : .active
+                }
+            } label: {
+                Image(systemName: editing ? "checkmark" : "checklist")
+                    .foregroundStyle(editing ? Color.pink : Color.primary)
+            }
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showProfile = true
+            } label: {
+                AvatarView(name: profileName, size: 36)
+            }
+            .buttonStyle(.plain)
+        }
+        .sharedBackgroundVisibility(.hidden)
+    }
+
+    // MARK: Содержимое
+
+    private var shownItems: [LibraryCategory] {
+        editing ? layout.items : layout.items.filter { !$0.hidden }
+    }
+
+    private var moveAction: ((IndexSet, Int) -> Void)? {
+        guard editing else { return nil }
+        return { from, to in layout.move(from: from, to: to) }
+    }
+
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                NavigationLink {
-                    FavoritesView()
+        List {
+            ForEach(shownItems) { item in
+                row(item)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+            }
+            .onMove(perform: moveAction)
+
+            if !editing && !recent.isEmpty {
+                recentSection
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+            }
+
+            if editing {
+                Text("Отметьте, что показывать в медиатеке, и перетащите строки, чтобы поменять порядок.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+                    .padding(.top, 8)
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, $editMode)
+        .animation(.snappy, value: editing)
+    }
+
+    @ViewBuilder
+    private func row(_ item: LibraryCategory) -> some View {
+        if editing {
+            HStack(spacing: 14) {
+                Button {
+                    withAnimation(.snappy) { layout.toggleHidden(item.id) }
                 } label: {
-                    CategoryRow(title: "Избранное", icon: "heart.fill",
-                                detail: "\(favorites.ids.count)")
+                    Image(systemName: item.hidden ? "circle" : "checkmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(item.hidden ? Color.secondary : Color.pink)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
-                Divider().padding(.leading, 44)
-
-                NavigationLink {
-                    ArtistsView()
-                } label: {
-                    CategoryRow(title: "Исполнители", icon: "music.mic",
-                                detail: "\(library.artists.count)")
-                }
-                .buttonStyle(.plain)
-                Divider().padding(.leading, 44)
-
-                NavigationLink {
-                    AlbumsView()
-                } label: {
-                    CategoryRow(title: "Альбомы", icon: "square.stack",
-                                detail: "\(library.albums.count)")
-                }
-                .buttonStyle(.plain)
-                Divider().padding(.leading, 44)
-
-                NavigationLink {
-                    SongsView(title: "Песни", tracks: library.tracks)
-                } label: {
-                    CategoryRow(title: "Песни", icon: "music.note",
-                                detail: "\(library.tracks.count)")
-                }
-                .buttonStyle(.plain)
-
-                if !recent.isEmpty {
-                    Text("Недавно добавленные")
-                        .font(.title2.weight(.bold))
-                        .padding(.top, 28)
-                        .padding(.bottom, 12)
-                    LazyVGrid(columns: columns, spacing: 22) {
-                        ForEach(recent) { album in
-                            NavigationLink {
-                                AlbumDetailView(album: album)
-                            } label: {
-                                AlbumCard(album: album)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                LibraryCategoryLabel(item: item)
+                    .opacity(item.hidden ? 0.5 : 1)
+            }
+        } else {
+            NavigationLink {
+                destination(for: item)
+            } label: {
+                LibraryCategoryLabel(item: item, detail: count(for: item))
+            }
+            .contextMenu {
+                if item.isCustom {
+                    Button {
+                        editingCategory = item
+                    } label: {
+                        Label("Изменить", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        deletingCategory = item
+                    } label: {
+                        Label("Удалить категорию", systemImage: "trash")
+                    }
+                } else {
+                    Button {
+                        withAnimation(.snappy) { layout.toggleHidden(item.id) }
+                    } label: {
+                        Label("Скрыть из медиатеки", systemImage: "eye.slash")
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
         }
+    }
+
+    @ViewBuilder
+    private func destination(for item: LibraryCategory) -> some View {
+        switch item.id {
+        case "favorites": FavoritesView()
+        case "artists": ArtistsView()
+        case "albums": AlbumsView()
+        case "songs": SongsView(title: "Песни", tracks: library.tracks)
+        default: CustomCategoryView(categoryID: item.id)
+        }
+    }
+
+    private func count(for item: LibraryCategory) -> String {
+        switch item.id {
+        case "favorites": return "\(favorites.ids.count)"
+        case "artists": return "\(library.artists.count)"
+        case "albums": return "\(library.albums.count)"
+        case "songs": return "\(library.tracks.count)"
+        default:
+            let all = Set(library.tracks.map { $0.id })
+            return "\(item.trackIDs.filter { all.contains($0) }.count)"
+        }
+    }
+
+    // MARK: Недавно добавленные
+
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                showAllAlbums = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Недавно добавленные")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(Color.primary)
+                    Image(systemName: "chevron.right")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
+                ForEach(recent) { album in
+                    RecentAlbumCard(album: album) {
+                        openAlbum = album.id
+                    }
+                }
+            }
+        }
+        .padding(.top, 28)
+        .padding(.bottom, 20)
     }
 
     private func loadRecent() async {
@@ -132,5 +301,332 @@ struct LibraryView: View {
                 .map { $0.0 }
         }.value
         recent = sorted
+    }
+}
+
+// MARK: - Карточка «Недавно добавленные»
+
+struct CardPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+struct RecentAlbumCard: View {
+    @EnvironmentObject var player: PlayerStore
+    let album: Album
+    let open: () -> Void
+
+    private var isCurrent: Bool {
+        guard let id = player.currentTrack?.id else { return false }
+        return album.tracks.contains { $0.id == id }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                Button(action: open) {
+                    ArtworkView(track: album.tracks.first, corner: 14, maxPixels: 500)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        }
+                        .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+                }
+                .buttonStyle(CardPressStyle())
+
+                Button {
+                    Haptics.tap()
+                    if isCurrent {
+                        player.togglePlayPause()
+                    } else {
+                        if player.shuffleOn { player.toggleShuffle() }
+                        player.play(album.tracks, startAt: 0)
+                    }
+                } label: {
+                    Image(systemName: isCurrent && player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 36, height: 36)
+                        .glassEffect(.regular.tint(.black.opacity(0.25)).interactive(), in: .circle)
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+            }
+
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(album.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isCurrent ? Color.pink : Color.primary)
+                        .lineLimit(1)
+                    Text(album.artist)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .contextMenu {
+            Button {
+                player.play(album.tracks, startAt: 0)
+            } label: {
+                Label("Играть", systemImage: "play.fill")
+            }
+            Button {
+                player.playShuffled(album.tracks)
+            } label: {
+                Label("Вперемешку", systemImage: "shuffle")
+            }
+            AddToCategoryMenu(tracks: album.tracks)
+        }
+    }
+}
+
+// MARK: - Своя категория
+
+struct CustomCategoryView: View {
+    @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var layout = LibraryLayout.shared
+    let categoryID: String
+    @State private var showEditor = false
+
+    private var category: LibraryCategory? { layout.category(categoryID) }
+
+    private var tracks: [Track] {
+        guard let c = category else { return [] }
+        let map = Dictionary(library.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return c.trackIDs.compactMap { map[$0] }
+    }
+
+    var body: some View {
+        let list = tracks
+        Group {
+            if list.isEmpty {
+                ContentUnavailableView(
+                    category?.title ?? "Категория",
+                    systemImage: category?.icon ?? "music.note",
+                    description: Text("Добавляйте песни через «⋯» → «Добавить в категорию» или долгим нажатием на альбом.")
+                )
+            } else {
+                List {
+                    PlayShuffleButtons(tracks: list)
+                    ForEach(Array(list.enumerated()), id: \.element.id) { index, track in
+                        TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Haptics.tap()
+                                player.play(list, startAt: index)
+                            }
+                    }
+                    .onDelete { offsets in
+                        layout.remove(offsets.map { list[$0].id }, from: categoryID)
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .navigationTitle(category?.title ?? "")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showEditor = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+            }
+        }
+        .sheet(isPresented: $showEditor) {
+            if let c = category { CategoryEditorView(existing: c) }
+        }
+    }
+}
+
+// MARK: - Создание и изменение категории
+
+struct CategoryEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    let existing: LibraryCategory?
+    @State private var title: String
+    @State private var icon: String
+    @State private var colorName: String
+
+    init(existing: LibraryCategory?) {
+        self.existing = existing
+        _title = State(initialValue: existing?.title ?? "")
+        _icon = State(initialValue: existing?.icon ?? "heart.fill")
+        _colorName = State(initialValue: existing?.colorName ?? "pink")
+    }
+
+    private var color: Color { CategoryPalette.color(colorName) }
+    private var trimmed: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(spacing: 14) {
+                        Image(systemName: icon)
+                            .font(.system(size: 38, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 92, height: 92)
+                            .background(
+                                LinearGradient(colors: [color, color.opacity(0.65)],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing),
+                                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            )
+                            .shadow(color: color.opacity(0.4), radius: 14, y: 6)
+                            .contentTransition(.symbolEffect(.replace))
+                        TextField("Например, «Любимые»", text: $title)
+                            .font(.title3.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                            .padding(.vertical, 10)
+                            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
+
+                Section("Цвет") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 14) {
+                        ForEach(CategoryPalette.colorNames, id: \.self) { name in
+                            Circle()
+                                .fill(CategoryPalette.color(name))
+                                .frame(width: 34, height: 34)
+                                .overlay {
+                                    if name == colorName {
+                                        Circle().strokeBorder(Color.primary.opacity(0.6), lineWidth: 3)
+                                            .frame(width: 44, height: 44)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                                .onTapGesture {
+                                    withAnimation(.snappy) { colorName = name }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+
+                Section("Значок") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                        ForEach(CategoryPalette.icons, id: \.self) { name in
+                            Image(systemName: name)
+                                .font(.system(size: 20))
+                                .foregroundStyle(name == icon ? color : Color.primary)
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(name == icon ? color.opacity(0.18) : Color(.tertiarySystemFill)))
+                                .contentShape(Circle())
+                                .onTapGesture {
+                                    withAnimation(.snappy) { icon = name }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+            .navigationTitle(existing == nil ? "Новая категория" : "Категория")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Готово") {
+                        if let existing {
+                            LibraryLayout.shared.update(existing.id, title: trimmed, icon: icon, colorName: colorName)
+                        } else {
+                            LibraryLayout.shared.create(title: trimmed, icon: icon, colorName: colorName)
+                        }
+                        dismiss()
+                    }
+                    .disabled(trimmed.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Аватар и профиль
+
+struct AvatarView: View {
+    let name: String
+    var size: CGFloat = 36
+
+    private var initials: String {
+        let words = name.split(whereSeparator: { $0 == " " })
+        return String(words.prefix(2).compactMap { $0.first }).uppercased()
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LinearGradient(colors: [Color(red: 0.62, green: 0.68, blue: 0.93),
+                                              Color(red: 0.42, green: 0.45, blue: 0.78)],
+                                     startPoint: .top, endPoint: .bottom))
+            if initials.isEmpty {
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.45, weight: .semibold))
+                    .foregroundStyle(.white)
+            } else {
+                Text(initials)
+                    .font(.system(size: size * 0.4, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+    }
+}
+
+struct ProfileView: View {
+    @EnvironmentObject var library: LibraryStore
+    @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var layout = LibraryLayout.shared
+    @AppStorage("profileName") private var name = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(spacing: 10) {
+                        AvatarView(name: name, size: 96)
+                        Text(name.isEmpty ? "Ваше имя" : name)
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(name.isEmpty ? .secondary : .primary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                }
+                Section("Имя") {
+                    TextField("Как вас зовут", text: $name)
+                        .textInputAutocapitalization(.words)
+                }
+                Section("Медиатека") {
+                    LabeledContent("Песни", value: "\(library.tracks.count)")
+                    LabeledContent("Альбомы", value: "\(library.albums.count)")
+                    LabeledContent("Исполнители", value: "\(library.artists.count)")
+                    LabeledContent("В избранном", value: "\(favorites.ids.count)")
+                    LabeledContent("Свои категории", value: "\(layout.custom.count)")
+                }
+            }
+            .navigationTitle("Профиль")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+        }
     }
 }

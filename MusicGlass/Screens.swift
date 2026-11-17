@@ -19,6 +19,7 @@ struct TrackActionButtons: View {
         } label: {
             Label("Найти данные и обложку", systemImage: "square.and.pencil")
         }
+        AddToCategoryMenu(tracks: [track])
     }
 }
 
