@@ -24,8 +24,14 @@ struct NowPlayingScreen: View {
             artworkView
             Spacer(minLength: 24)
             titleRow
-            ScrubSection(clock: player.clock)
-                .padding(.top, 18)
+                        if player.isLive {
+                LiveRow()
+                    .padding(.top, 18)
+            } else {
+                ScrubSection(clock: player.clock)
+                    .padding(.top, 18)
+            }
+
             Spacer(minLength: 8)
             transport
             Spacer(minLength: 8)
