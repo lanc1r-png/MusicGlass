@@ -24,7 +24,7 @@ struct NowPlayingScreen: View {
             artworkView
             Spacer(minLength: 24)
             titleRow
-                        if player.isLive {
+            if player.isLive {
                 LiveRow()
                     .padding(.top, 18)
             } else {
@@ -87,13 +87,13 @@ struct NowPlayingScreen: View {
 
     // Название и меню
 
-            private var titleRow: some View {
+    private var titleRow: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(player.currentTrack?.title ?? "Не играет")
+                Text(player.displayTitle)
                     .font(.title2.weight(.bold))
                     .lineLimit(1)
-                Text(player.currentTrack?.artist ?? " ")
+                Text(player.displaySubtitle)
                     .font(.title3)
                     .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(1)
@@ -101,7 +101,9 @@ struct NowPlayingScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let t = player.currentTrack {
-                if OnlineID.isOnline(t) {
+                if RadioID.isRadio(t) {
+                    RadioFavoriteButton(track: t)
+                } else if OnlineID.isOnline(t) {
                     OnlineFavoriteButton(track: t)
                 } else {
                     FavoriteButton(track: t)
@@ -109,7 +111,15 @@ struct NowPlayingScreen: View {
             }
 
             Menu {
-                if let t = player.currentTrack, OnlineID.isOnline(t) {
+                if let t = player.currentTrack, RadioID.isRadio(t) {
+                    if let s = RadioCatalog.shared.info(for: t),
+                       !s.homepage.isEmpty,
+                       let url = URL(string: s.homepage) {
+                        Link(destination: url) {
+                            Label("Сайт станции", systemImage: "safari")
+                        }
+                    }
+                } else if let t = player.currentTrack, OnlineID.isOnline(t) {
                     if let info = OnlineCatalog.shared.info(for: t),
                        !info.artistHandle.isEmpty,
                        let url = URL(string: "https://audius.co/\(info.artistHandle)") {
