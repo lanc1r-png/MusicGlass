@@ -13,7 +13,7 @@ struct MiniPlayer: View {
             ArtworkImage(image: player.artwork, corner: 8)
                 .frame(width: 34, height: 34)
 
-            Text(player.currentTrack?.title ?? "Не играет")
+            Text(player.displayTitle)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
 
