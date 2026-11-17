@@ -37,7 +37,7 @@ struct PlayShuffleButtons: View {
 // MARK: - Карточка альбома
 
 struct AlbumCard: View {
-    @Environment(\.playerControl) private var player
+    @EnvironmentObject var library: LibraryStore
     let album: Album
 
     var body: some View {
@@ -53,18 +53,86 @@ struct AlbumCard: View {
                 .lineLimit(1)
         }
         .contextMenu {
-            Button {
-                player?.play(album.tracks, startAt: 0)
-            } label: {
-                Label("Играть", systemImage: "play.fill")
-            }
-            Button {
-                player?.playShuffled(album.tracks)
-            } label: {
-                Label("Вперемешку", systemImage: "shuffle")
-            }
-            AddToCategoryMenu(tracks: album.tracks)
+            AlbumMenuItems(tracks: album.tracks)
+        } preview: {
+            AlbumPreview(album: album)
+                .environmentObject(library)
         }
+    }
+}
+
+/// Общие пункты меню для альбома или набора песен.
+struct AlbumMenuItems: View {
+    @Environment(\.playerControl) private var player
+    let tracks: [Track]
+
+    var body: some View {
+        Button {
+            player?.play(tracks, startAt: 0)
+        } label: {
+            Label("Играть", systemImage: "play.fill")
+        }
+        Button {
+            player?.playShuffled(tracks)
+        } label: {
+            Label("Вперемешку", systemImage: "shuffle")
+        }
+        Divider()
+        Button {
+            player?.playNext(tracks)
+        } label: {
+            Label("Играть следующим", systemImage: "text.line.first.and.arrowtriangle.forward")
+        }
+        Button {
+            player?.addToQueue(tracks)
+        } label: {
+            Label("В конец очереди", systemImage: "text.line.last.and.arrowtriangle.forward")
+        }
+        AddToCategoryMenu(tracks: tracks)
+    }
+}
+
+/// Превью при долгом нажатии: крупная обложка и первые песни, как в Apple Music.
+struct AlbumPreview: View {
+    let album: Album
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ArtworkView(track: album.tracks.first, corner: 14, maxPixels: 600)
+                .frame(width: 288, height: 288)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(album.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                Text(album.artist)
+                    .font(.subheadline)
+                    .foregroundStyle(.pink)
+                    .lineLimit(1)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(Array(album.tracks.prefix(5).enumerated()), id: \.element.id) { i, t in
+                    HStack(spacing: 10) {
+                        Text("\(i + 1)")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18, alignment: .leading)
+                        Text(t.title)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                    }
+                }
+                if album.tracks.count > 5 {
+                    Text("и ещё \(album.tracks.count - 5)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 28)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 320, alignment: .leading)
+        .background(Color(.systemBackground))
     }
 }
 
@@ -101,6 +169,7 @@ struct AlbumDetailView: View {
     @EnvironmentObject var library: LibraryStore
     let album: Album
     @State private var tint: Color = .clear
+    @State private var offset: CGFloat = 0
 
     private var totalMinutes: Int {
         Int(album.tracks.map { $0.duration }.reduce(0, +) / 60)
@@ -131,15 +200,37 @@ struct AlbumDetailView: View {
                 .frame(height: 440)
                 .ignoresSafeArea()
         }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y + geo.contentInsets.top
+        } action: { _, value in
+            offset = value
+        }
+        // Название появляется в стеклянной панели, когда обложка уехала наверх.
+        .navigationTitle(offset > 300 ? album.title : "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    AlbumMenuItems(tracks: album.tracks)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+            }
+        }
         .task { await loadTint() }
     }
 
     private var header: some View {
-        VStack(spacing: 6) {
+        let pull = max(0, -offset)
+        let lift = max(0, offset)
+        return VStack(spacing: 6) {
             ArtworkView(track: album.tracks.first, corner: 18, maxPixels: 800)
                 .frame(width: 260, height: 260)
                 .shadow(color: .black.opacity(0.3), radius: 22, y: 12)
+                // Растягивается при оттягивании, уменьшается и уходит под панель при прокрутке.
+                .scaleEffect(pull > 0 ? 1 + pull / 500 : max(0.78, 1 - lift / 900), anchor: .bottom)
+                .offset(y: lift * 0.3)
+                .opacity(1 - min(lift / 320, 0.9))
                 .padding(.bottom, 10)
             Text(album.title)
                 .font(.title2.bold())
@@ -147,7 +238,7 @@ struct AlbumDetailView: View {
             Text(album.artist)
                 .font(.title3)
                 .foregroundStyle(.pink)
-            Text("Альбом")
+            Text("Альбом · \(album.tracks.count) песен")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
         }

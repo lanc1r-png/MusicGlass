@@ -290,6 +290,7 @@ struct CardPressStyle: ButtonStyle {
 
 struct RecentAlbumCard: View {
     @Environment(\.playerControl) private var player
+    @EnvironmentObject var library: LibraryStore
     @ObservedObject private var status = PlaybackStatus.shared
     let album: Album
     let open: () -> Void
@@ -349,17 +350,10 @@ struct RecentAlbumCard: View {
             .buttonStyle(.plain)
         }
         .contextMenu {
-            Button {
-                player?.play(album.tracks, startAt: 0)
-            } label: {
-                Label("Играть", systemImage: "play.fill")
-            }
-            Button {
-                player?.playShuffled(album.tracks)
-            } label: {
-                Label("Вперемешку", systemImage: "shuffle")
-            }
-            AddToCategoryMenu(tracks: album.tracks)
+            AlbumMenuItems(tracks: album.tracks)
+        } preview: {
+            AlbumPreview(album: album)
+                .environmentObject(library)
         }
     }
 }

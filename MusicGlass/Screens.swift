@@ -5,10 +5,22 @@ import UIKit
 
 struct TrackActionButtons: View {
     @ObservedObject private var favorites = FavoritesStore.shared
+    @Environment(\.playerControl) private var player
     let track: Track
     @Binding var showEditor: Bool
 
     var body: some View {
+        Button {
+            player?.playNext([track])
+        } label: {
+            Label("Играть следующей", systemImage: "text.line.first.and.arrowtriangle.forward")
+        }
+        Button {
+            player?.addToQueue([track])
+        } label: {
+            Label("В конец очереди", systemImage: "text.line.last.and.arrowtriangle.forward")
+        }
+        Divider()
         Button {
             favorites.toggle(track)
         } label: {
@@ -252,7 +264,7 @@ struct ArtistsView: View {
     var body: some View {
         List(library.artists) { artist in
             NavigationLink {
-                SongsView(title: artist.name, tracks: artist.tracks)
+                LocalArtistView(artist: artist)
             } label: {
                 HStack(spacing: 12) {
                     ArtworkView(track: artist.tracks.first, corner: 26, maxPixels: 160)

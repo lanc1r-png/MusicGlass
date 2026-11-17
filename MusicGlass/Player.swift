@@ -256,6 +256,70 @@ final class PlayerStore: ObservableObject {
         updateNowPlaying()
     }
 
+    // MARK: Очередь
+
+    /// Треки после текущего.
+    var upcoming: [Track] {
+        guard let i = currentIndex, i + 1 < queue.count else { return [] }
+        return Array(queue[(i + 1)...])
+    }
+
+    /// Включает трек из очереди по его месту в общем списке.
+    func jump(to index: Int) {
+        guard queue.indices.contains(index) else { return }
+        currentIndex = index
+        loadCurrent(autoplay: true)
+    }
+
+    /// Перестановка внутри «Далее» (индексы считаются от первого трека после текущего).
+    func moveUpcoming(from source: IndexSet, to destination: Int) {
+        let base = (currentIndex ?? -1) + 1
+        guard base <= queue.count else { return }
+        var up = Array(queue[base...])
+        up.move(fromOffsets: source, toOffset: destination)
+        queue = Array(queue[..<base]) + up
+        if !shuffleOn { originalQueue = queue }
+        cancelPrepared()
+    }
+
+    func removeUpcoming(at offset: Int) {
+        let index = (currentIndex ?? -1) + 1 + offset
+        guard queue.indices.contains(index), index != currentIndex else { return }
+        let removed = queue.remove(at: index)
+        originalQueue.removeAll { $0.id == removed.id }
+        cancelPrepared()
+    }
+
+    /// Ставит треки сразу после текущего.
+    func playNext(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        guard let i = currentIndex, !queue.isEmpty else {
+            play(tracks, startAt: 0)
+            return
+        }
+        queue.insert(contentsOf: tracks, at: i + 1)
+        if let oi = originalQueue.firstIndex(where: { $0.id == queue[i].id }) {
+            originalQueue.insert(contentsOf: tracks, at: oi + 1)
+        } else {
+            originalQueue.append(contentsOf: tracks)
+        }
+        cancelPrepared()
+        Haptics.tap()
+    }
+
+    /// Добавляет треки в конец очереди.
+    func addToQueue(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        guard currentIndex != nil, !queue.isEmpty else {
+            play(tracks, startAt: 0)
+            return
+        }
+        queue.append(contentsOf: tracks)
+        originalQueue.append(contentsOf: tracks)
+        cancelPrepared()
+        Haptics.tap()
+    }
+
     // MARK: Источник трека
 
     private func source(for track: Track) -> (url: URL, localURL: URL?)? {

@@ -1,14 +1,19 @@
 import SwiftUI
 import MediaPlayer
+import AVFoundation
 import UIKit
 
 // MARK: - Экран «Сейчас играет»
+
+enum NowPanel { case none, lyrics, queue }
 
 struct NowPlayingScreen: View {
     @EnvironmentObject var player: PlayerStore
     @EnvironmentObject var library: LibraryStore
     @State private var palette: [UIColor] = []
     @State private var showEditor = false
+    @State private var panel: NowPanel = .none
+    @Namespace private var artNS
     @Environment(\.colorScheme) private var scheme
 
     private var fg: Color { scheme == .dark ? .white : .black }
@@ -23,22 +28,37 @@ struct NowPlayingScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 28)
-            artworkView
-            Spacer(minLength: 24)
-            titleRow
+            if panel == .none {
+                Spacer(minLength: 28)
+                artworkView
+                Spacer(minLength: 24)
+                titleRow
+            } else {
+                compactHeader
+                    .padding(.top, 30)
+                Group {
+                    if panel == .lyrics {
+                        LyricsPanel(clock: player.clock, fg: fg)
+                    } else {
+                        QueuePanel(fg: fg)
+                    }
+                }
+                .frame(maxHeight: .infinity)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             if player.isLive {
                 LiveRow()
                     .padding(.top, 18)
             } else {
                 ScrubSection(clock: player.clock)
-                    .padding(.top, 18)
+                    .padding(.top, 14)
             }
 
             Spacer(minLength: 8)
             transport
             Spacer(minLength: 8)
-            volumeRow
+            VolumeRow(fg: fg)
             Spacer(minLength: 10)
             bottomRow
         }
@@ -51,6 +71,13 @@ struct NowPlayingScreen: View {
             if let t = player.currentTrack {
                 TagEditorView(track: t)
             }
+        }
+    }
+
+    private func setPanel(_ p: NowPanel) {
+        Haptics.tap()
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
+            panel = panel == p ? .none : p
         }
     }
 
@@ -85,9 +112,33 @@ struct NowPlayingScreen: View {
 
     private var artworkView: some View {
         NowPlayingArtwork(image: player.artwork)
+            .matchedGeometryEffect(id: "art", in: artNS)
             .shadow(color: .black.opacity(scheme == .dark ? 0.4 : 0.22), radius: 28, y: 18)
             .scaleEffect(player.isPlaying ? 1.0 : 0.86)
             .animation(.spring(response: 0.55, dampingFraction: 0.72), value: player.isPlaying)
+    }
+
+    /// Шапка в режиме текста или очереди: маленькая обложка, название, сердечко и меню.
+    private var compactHeader: some View {
+        HStack(spacing: 12) {
+            NowPlayingArtwork(image: player.artwork, corner: 10)
+                .matchedGeometryEffect(id: "art", in: artNS)
+                .frame(width: 62, height: 62)
+                .shadow(color: .black.opacity(0.25), radius: 10, y: 5)
+                .onTapGesture { setPanel(panel) }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(player.displayTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(player.displaySubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(fg.opacity(0.65))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            favoriteButton
+            moreMenu
+        }
     }
 
     // Название и меню
@@ -104,57 +155,63 @@ struct NowPlayingScreen: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            favoriteButton
+            moreMenu
+        }
+    }
 
-            if let t = player.currentTrack {
-                if RadioID.isRadio(t) {
-                    RadioFavoriteButton(track: t)
-                } else if OnlineID.isOnline(t) {
-                    OnlineFavoriteButton(track: t)
-                } else {
-                    FavoriteButton(track: t)
-                }
-            }
-
-            Menu {
-                if let t = player.currentTrack, RadioID.isRadio(t) {
-                    if let s = RadioCatalog.shared.info(for: t),
-                       !s.homepage.isEmpty,
-                       let url = URL(string: s.homepage) {
-                        Link(destination: url) {
-                            Label("Сайт станции", systemImage: "safari")
-                        }
-                    }
-                } else if let t = player.currentTrack, OnlineID.isOnline(t) {
-                    if let info = OnlineCatalog.shared.info(for: t),
-                       !info.artistHandle.isEmpty,
-                       let url = URL(string: "https://audius.co/\(info.artistHandle)") {
-                        Link(destination: url) {
-                            Label("Открыть исполнителя на Audius", systemImage: "safari")
-                        }
-                    }
-                } else {
-                    Button {
-                        showEditor = true
-                    } label: {
-                        Label("Найти данные и обложку", systemImage: "square.and.pencil")
-                    }
-                    .disabled(player.currentTrack == nil)
-
-                    if let t = player.currentTrack, let url = library.url(for: t) {
-                        ShareLink(item: url) {
-                            Label("Поделиться файлом", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 18, weight: .bold))
-                    .frame(width: 40, height: 40)
-                    .glassEffect(.regular.interactive(), in: .circle)
+    @ViewBuilder
+    private var favoriteButton: some View {
+        if let t = player.currentTrack {
+            if RadioID.isRadio(t) {
+                RadioFavoriteButton(track: t)
+            } else if OnlineID.isOnline(t) {
+                OnlineFavoriteButton(track: t)
+            } else {
+                FavoriteButton(track: t)
             }
         }
     }
 
+    private var moreMenu: some View {
+        Menu {
+            if let t = player.currentTrack, RadioID.isRadio(t) {
+                if let s = RadioCatalog.shared.info(for: t),
+                   !s.homepage.isEmpty,
+                   let url = URL(string: s.homepage) {
+                    Link(destination: url) {
+                        Label("Сайт станции", systemImage: "safari")
+                    }
+                }
+            } else if let t = player.currentTrack, OnlineID.isOnline(t) {
+                if let info = OnlineCatalog.shared.info(for: t),
+                   !info.artistHandle.isEmpty,
+                   let url = URL(string: "https://audius.co/\(info.artistHandle)") {
+                    Link(destination: url) {
+                        Label("Открыть исполнителя на Audius", systemImage: "safari")
+                    }
+                }
+            } else {
+                Button {
+                    showEditor = true
+                } label: {
+                    Label("Найти данные и обложку", systemImage: "square.and.pencil")
+                }
+                .disabled(player.currentTrack == nil)
+
+                if let t = player.currentTrack, let url = library.url(for: t) {
+                    ShareLink(item: url) {
+                        Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 18, weight: .bold))
+                .frame(width: 40, height: 40)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+    }
 
     // Управление
 
@@ -184,28 +241,16 @@ struct NowPlayingScreen: View {
         .buttonStyle(PressScaleStyle())
     }
 
-    private var volumeRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "speaker.fill")
-                .font(.footnote)
-                .foregroundStyle(fg.opacity(0.6))
-            SystemVolumeSlider()
-                .frame(height: 30)
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.footnote)
-                .foregroundStyle(fg.opacity(0.6))
-        }
-    }
-
+    /// Как в Apple Music: текст — AirPlay — очередь.
     private var bottomRow: some View {
         HStack {
             Spacer()
-            toggleButton("shuffle", on: player.shuffleOn) { player.toggleShuffle() }
+            toggleButton(panel == .lyrics ? "quote.bubble.fill" : "quote.bubble",
+                         on: panel == .lyrics) { setPanel(.lyrics) }
             Spacer()
             AirPlayButton().frame(width: 44, height: 44)
             Spacer()
-            toggleButton(player.repeatMode == .one ? "repeat.1" : "repeat",
-                         on: player.repeatMode != .off) { player.cycleRepeat() }
+            toggleButton("list.bullet", on: panel == .queue) { setPanel(.queue) }
             Spacer()
         }
     }
@@ -216,8 +261,100 @@ struct NowPlayingScreen: View {
             Image(systemName: name)
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(on ? fg : fg.opacity(0.55))
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 44, height: 44)
-                .background(Circle().fill(fg.opacity(on ? 0.22 : 0)))
+                .background(Circle().fill(fg.opacity(on ? 0.2 : 0)))
+        }
+        .buttonStyle(PressScaleStyle())
+    }
+}
+
+// MARK: - Очередь «Далее»
+
+struct QueuePanel: View {
+    @EnvironmentObject var player: PlayerStore
+    let fg: Color
+    @State private var editMode: EditMode = .active
+
+    var body: some View {
+        let up = player.upcoming
+        let base = (player.currentIndex ?? 0) + 1
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(player.isLive ? "Другие станции" : "Далее")
+                    .font(.title3.weight(.bold))
+                Spacer()
+                if !player.isLive {
+                    pill(player.shuffleOn ? "shuffle" : "shuffle", on: player.shuffleOn) {
+                        player.toggleShuffle()
+                    }
+                    pill(player.repeatMode == .one ? "repeat.1" : "repeat", on: player.repeatMode != .off) {
+                        player.cycleRepeat()
+                    }
+                }
+            }
+            .padding(.top, 18)
+
+            if up.isEmpty {
+                Text("Дальше ничего нет")
+                    .font(.subheadline)
+                    .foregroundStyle(fg.opacity(0.5))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(Array(up.enumerated()), id: \.offset) { offset, track in
+                        HStack(spacing: 12) {
+                            ArtworkView(track: track, corner: 6, maxPixels: 120)
+                                .frame(width: 44, height: 44)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(track.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(fg)
+                                    .lineLimit(1)
+                                Text(track.artist)
+                                    .font(.caption)
+                                    .foregroundStyle(fg.opacity(0.6))
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            Haptics.tap()
+                            player.jump(to: base + offset)
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                withAnimation { player.removeUpcoming(at: offset) }
+                            } label: {
+                                Label("Убрать из очереди", systemImage: "minus.circle")
+                            }
+                        }
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
+                    }
+                    .onMove { player.moveUpcoming(from: $0, to: $1) }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .environment(\.editMode, $editMode)
+                .tint(fg)
+            }
+        }
+    }
+
+    private func pill(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(on ? (fg == .white ? Color.black : Color.white) : fg)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 46, height: 30)
+                .background(Capsule().fill(on ? fg.opacity(0.9) : fg.opacity(0.12)))
         }
         .buttonStyle(PressScaleStyle())
     }
@@ -227,6 +364,7 @@ struct NowPlayingScreen: View {
 
 struct NowPlayingArtwork: View {
     let image: UIImage?
+    var corner: CGFloat = 24
     @Environment(\.colorScheme) private var scheme
     private var fg: Color { scheme == .dark ? .white : .black }
 
@@ -242,12 +380,72 @@ struct NowPlayingArtwork: View {
                     fg.opacity(0.10)
                         .overlay {
                             Image(systemName: "music.note")
-                                .font(.system(size: 84, weight: .regular))
+                                .font(.system(size: corner > 12 ? 84 : 22, weight: .regular))
                                 .foregroundStyle(fg.opacity(0.35))
                         }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+}
+
+// MARK: - Упругая полоса (перемотка и громкость, как в Apple Music)
+
+/// При касании утолщается, тянется за пальцем относительно, а за краями пружинит.
+struct ElasticBar: View {
+    let value: Double
+    let fg: Color
+    @Binding var active: Bool
+    var onChange: (Double) -> Void
+    var onEnd: (Double) -> Void
+
+    @State private var startValue: Double = 0
+    @State private var overflow: CGFloat = 0
+    @State private var last: Double = 0
+    private let haptic = UIImpactFeedbackGenerator(style: .light)
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let v = min(max(value, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule().fill(fg.opacity(active ? 0.28 : 0.2))
+                Capsule()
+                    .fill(fg.opacity(active ? 1 : 0.78))
+                    .frame(width: w * v)
+            }
+            .frame(height: active ? 14 : 7)
+            .scaleEffect(x: 1 + abs(overflow) / w, y: 1 - min(abs(overflow) / 160, 0.3),
+                         anchor: overflow < 0 ? .trailing : .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        if !active {
+                            startValue = v
+                            last = v
+                            haptic.prepare()
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.62)) { active = true }
+                        }
+                        let raw = startValue + Double(g.translation.width / w)
+                        let clamped = min(max(raw, 0), 1)
+                        let over = CGFloat(raw - clamped) * w
+                        overflow = (over >= 0 ? 1 : -1) * pow(abs(over), 0.7)
+                        if (clamped == 0 || clamped == 1) && last != clamped { haptic.impactOccurred() }
+                        last = clamped
+                        onChange(clamped)
+                    }
+                    .onEnded { _ in
+                        let final = last
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) {
+                            active = false
+                            overflow = 0
+                        }
+                        onEnd(final)
+                    }
+            )
+        }
     }
 }
 
@@ -256,52 +454,31 @@ struct NowPlayingArtwork: View {
 struct ScrubSection: View {
     @EnvironmentObject var player: PlayerStore
     @ObservedObject var clock: PlayerClock
-    @State private var scrubbing = false
+    @State private var active = false
     @State private var scrubValue: Double = 0
     @Environment(\.colorScheme) private var scheme
     private var fg: Color { scheme == .dark ? .white : .black }
 
-    private var shown: Double { scrubbing ? scrubValue : clock.currentTime }
+    private var shown: Double { active ? scrubValue : clock.currentTime }
     private var total: Double { max(clock.duration, 1) }
 
     var body: some View {
-        VStack(spacing: 6) {
-            GeometryReader { geo in
-                let width = geo.size.width
-                let progress = min(max(shown / total, 0), 1)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(fg.opacity(0.28))
-                    Capsule()
-                        .fill(fg.opacity(0.92))
-                        .frame(width: max(width * progress, 0))
-                }
-                .frame(height: scrubbing ? 12 : 6)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { g in
-                            scrubbing = true
-                            let f = min(max(g.location.x / max(width, 1), 0), 1)
-                            scrubValue = f * total
-                        }
-                        .onEnded { g in
-                            let f = min(max(g.location.x / max(width, 1), 0), 1)
-                            player.seek(to: f * total)
-                            scrubbing = false
-                        }
-                )
-                .animation(.easeOut(duration: 0.15), value: scrubbing)
-            }
-            .frame(height: 24)
+        VStack(spacing: 4) {
+            ElasticBar(value: shown / total, fg: fg, active: $active,
+                       onChange: { scrubValue = $0 * total },
+                       onEnd: { player.seek(to: $0 * total) })
+                .frame(height: 30)
 
             HStack {
                 Text(format(shown))
                 Spacer()
                 Text("-" + format(max(total - shown, 0)))
             }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(fg.opacity(0.6))
+            .font(.caption.monospacedDigit().weight(active ? .semibold : .regular))
+            .foregroundStyle(fg.opacity(active ? 0.9 : 0.55))
+            .scaleEffect(active ? 1.06 : 1)
+            .offset(y: active ? 3 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: active)
         }
     }
 
@@ -321,14 +498,84 @@ struct PressScaleStyle: ButtonStyle {
 
 // MARK: - Громкость
 
-struct SystemVolumeSlider: UIViewRepresentable {
+/// Системная громкость: читаем из аудиосессии, меняем через скрытый системный слайдер.
+@MainActor
+final class SystemVolume: ObservableObject {
+    static let shared = SystemVolume()
+    @Published var value: Double
+    var dragging = false
+    weak var slider: UISlider?
+    private var observation: NSKeyValueObservation?
+
+    private init() {
+        value = Double(AVAudioSession.sharedInstance().outputVolume)
+        observation = AVAudioSession.sharedInstance().observe(\.outputVolume) { [weak self] session, _ in
+            let v = Double(session.outputVolume)
+            Task { @MainActor in
+                guard let self, !self.dragging else { return }
+                withAnimation(.easeOut(duration: 0.15)) { self.value = v }
+            }
+        }
+    }
+
+    func set(_ v: Double) {
+        value = v
+        slider?.value = Float(v)
+    }
+}
+
+/// Невидимый системный регулятор: нужен, чтобы менять громкость и не показывать системную плашку.
+struct HiddenVolumeView: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
-        let v = MPVolumeView(frame: .zero)
-        v.tintColor = .label
+        let v = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 100, height: 30))
+        v.alpha = 0.011
+        v.isUserInteractionEnabled = false
         return v
     }
 
-    func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {
+        DispatchQueue.main.async {
+            SystemVolume.shared.slider = Self.findSlider(in: uiView)
+        }
+    }
+
+    private static func findSlider(in view: UIView) -> UISlider? {
+        if let s = view as? UISlider { return s }
+        for sub in view.subviews {
+            if let s = findSlider(in: sub) { return s }
+        }
+        return nil
+    }
+}
+
+struct VolumeRow: View {
+    let fg: Color
+    @ObservedObject private var volume = SystemVolume.shared
+    @State private var active = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "speaker.fill")
+                .font(.footnote)
+                .foregroundStyle(fg.opacity(active ? 0.9 : 0.55))
+                .scaleEffect(active ? 1.18 : 1)
+            ElasticBar(value: volume.value, fg: fg, active: $active,
+                       onChange: { volume.set($0) },
+                       onEnd: { volume.set($0) })
+                .frame(height: 30)
+            Image(systemName: "speaker.wave.3.fill", variableValue: volume.value)
+                .font(.footnote)
+                .foregroundStyle(fg.opacity(active ? 0.9 : 0.55))
+                .scaleEffect(active ? 1.18 : 1)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: active)
+        .background {
+            HiddenVolumeView()
+                .frame(width: 100, height: 30)
+                .allowsHitTesting(false)
+        }
+        .onChange(of: active) { _, a in volume.dragging = a }
+    }
 }
 
 // MARK: - Живой фон из цветов обложки

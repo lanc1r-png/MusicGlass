@@ -8,6 +8,8 @@ struct MiniPlayer: View {
     @Binding var showNowPlaying: Bool
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
     @State private var dragX: CGFloat = 0
+    @State private var tint: Color?
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         HStack(spacing: 12) {
@@ -47,8 +49,31 @@ struct MiniPlayer: View {
             }
         }
         .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Лёгкий оттенок обложки под стеклом.
+        .background {
+            if let tint {
+                LinearGradient(colors: [tint.opacity(scheme == .dark ? 0.55 : 0.4),
+                                        tint.opacity(scheme == .dark ? 0.2 : 0.12)],
+                               startPoint: .leading, endPoint: .trailing)
+                    .clipShape(Capsule())
+                    .transition(.opacity)
+            }
+        }
         .contentShape(Rectangle())
         .clipped()
+        .task(id: "\(player.currentTrack?.id ?? "")|\(player.artwork != nil)") {
+            guard let art = player.artwork else {
+                withAnimation(.easeOut(duration: 0.4)) { tint = nil }
+                return
+            }
+            let colors = await Task.detached(priority: .utility) {
+                ArtPalette.colors(from: art, count: 1)
+            }.value
+            withAnimation(.easeInOut(duration: 0.6)) {
+                tint = colors.first.map { Color(uiColor: $0) }
+            }
+        }
         .onTapGesture {
             if player.currentTrack != nil { showNowPlaying = true }
         }
