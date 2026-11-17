@@ -54,6 +54,18 @@ final class RadioListModel: ObservableObject {
               countryCode: String? = nil, debounce: Bool = false) {
         task?.cancel()
         errorText = nil
+
+        // Сначала показываем сохранённый список (мгновенно), потом обновляем.
+        var showedCache = false
+        if let cached = RadioAPI.cached(name: name, tag: tag, countryCode: countryCode) {
+            stations = cached.stations
+            showedCache = true
+            if cached.fresh {
+                isLoading = false
+                return
+            }
+        }
+
         isLoading = true
         task = Task {
             if debounce { try? await Task.sleep(nanoseconds: 400_000_000) }
@@ -64,8 +76,11 @@ final class RadioListModel: ObservableObject {
                 stations = list
             } catch {
                 if Task.isCancelled { return }
-                stations = []
-                errorText = error.localizedDescription
+                // Если уже показан сохранённый список, ошибку не выводим.
+                if !showedCache {
+                    stations = []
+                    errorText = error.localizedDescription
+                }
             }
             isLoading = false
         }
