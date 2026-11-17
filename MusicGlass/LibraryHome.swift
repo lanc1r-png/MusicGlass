@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UIKit
 
 // Старая строка категории (может использоваться на других экранах, оставлена как есть).
 struct CategoryRow: View {
@@ -558,7 +560,48 @@ struct CategoryEditorView: View {
 
 // MARK: - Аватар и профиль
 
+/// Фото профиля: хранится в папке приложения (квадрат 600×600).
+@MainActor
+final class AvatarStore: ObservableObject {
+    static let shared = AvatarStore()
+    @Published private(set) var image: UIImage?
+
+    private var fileURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("avatar.jpg")
+    }
+
+    private init() {
+        image = UIImage(contentsOfFile: fileURL.path)
+    }
+
+    func set(_ data: Data) {
+        guard let source = UIImage(data: data) else { return }
+        let side: CGFloat = 600
+        let scale = max(side / source.size.width, side / source.size.height)
+        let w = source.size.width * scale
+        let h = source.size.height * scale
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let square = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
+        }
+        if let jpg = square.jpegData(compressionQuality: 0.88) {
+            try? jpg.write(to: fileURL, options: .atomic)
+        }
+        image = square
+        Haptics.tap()
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: fileURL)
+        image = nil
+    }
+}
+
 struct AvatarView: View {
+    @ObservedObject private var avatar = AvatarStore.shared
     let name: String
     var size: CGFloat = 36
 
@@ -569,21 +612,28 @@ struct AvatarView: View {
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(LinearGradient(colors: [Color(red: 0.62, green: 0.68, blue: 0.93),
-                                              Color(red: 0.42, green: 0.45, blue: 0.78)],
-                                     startPoint: .top, endPoint: .bottom))
-            if initials.isEmpty {
-                Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.45, weight: .semibold))
-                    .foregroundStyle(.white)
+            if let img = avatar.image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
             } else {
-                Text(initials)
-                    .font(.system(size: size * 0.4, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                Circle()
+                    .fill(LinearGradient(colors: [Color(red: 0.62, green: 0.68, blue: 0.93),
+                                                  Color(red: 0.42, green: 0.45, blue: 0.78)],
+                                         startPoint: .top, endPoint: .bottom))
+                if initials.isEmpty {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: size * 0.45, weight: .semibold))
+                        .foregroundStyle(.white)
+                } else {
+                    Text(initials)
+                        .font(.system(size: size * 0.4, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
             }
         }
         .frame(width: size, height: size)
+        .clipShape(Circle())
         .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
     }
 }
@@ -592,15 +642,36 @@ struct ProfileView: View {
     @EnvironmentObject var library: LibraryStore
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var layout = LibraryLayout.shared
+    @ObservedObject private var avatar = AvatarStore.shared
     @AppStorage("profileName") private var name = ""
     @Environment(\.dismiss) private var dismiss
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var loadingPhoto = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     VStack(spacing: 10) {
-                        AvatarView(name: name, size: 96)
+                        PhotosPicker(selection: $pickerItem, matching: .images) {
+                            AvatarView(name: name, size: 110)
+                                .overlay {
+                                    if loadingPhoto {
+                                        Circle().fill(.black.opacity(0.35))
+                                        ProgressView().tint(.white)
+                                    }
+                                }
+                                .overlay(alignment: .bottomTrailing) {
+                                    Image(systemName: "camera.fill")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 34, height: 34)
+                                        .background(Circle().fill(Color.pink))
+                                        .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 3))
+                                }
+                        }
+                        .buttonStyle(.plain)
+
                         Text(name.isEmpty ? "Ваше имя" : name)
                             .font(.title2.weight(.bold))
                             .foregroundStyle(name.isEmpty ? .secondary : .primary)
@@ -611,6 +682,19 @@ struct ProfileView: View {
                 Section("Имя") {
                     TextField("Как вас зовут", text: $name)
                         .textInputAutocapitalization(.words)
+                }
+                Section("Фото") {
+                    PhotosPicker(selection: $pickerItem, matching: .images) {
+                        Label(avatar.image == nil ? "Выбрать фото" : "Изменить фото",
+                              systemImage: "photo.on.rectangle")
+                    }
+                    if avatar.image != nil {
+                        Button(role: .destructive) {
+                            withAnimation { avatar.remove() }
+                        } label: {
+                            Label("Удалить фото", systemImage: "trash")
+                        }
+                    }
                 }
                 Section("Медиатека") {
                     LabeledContent("Песни", value: "\(library.tracks.count)")
@@ -625,6 +709,17 @@ struct ProfileView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Готово") { dismiss() }
+                }
+            }
+            .onChange(of: pickerItem) { _, item in
+                guard let item else { return }
+                loadingPhoto = true
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        withAnimation { avatar.set(data) }
+                    }
+                    loadingPhoto = false
+                    pickerItem = nil
                 }
             }
         }

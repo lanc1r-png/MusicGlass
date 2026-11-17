@@ -30,7 +30,6 @@ struct RootView: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingScreen()
-                .preferredColorScheme(.dark)
                 .presentationDragIndicator(.visible)
         }
     }

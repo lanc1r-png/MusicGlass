@@ -9,6 +9,9 @@ struct NowPlayingScreen: View {
     @EnvironmentObject var library: LibraryStore
     @State private var palette: [UIColor] = []
     @State private var showEditor = false
+    @Environment(\.colorScheme) private var scheme
+
+    private var fg: Color { scheme == .dark ? .white : .black }
 
     private var paletteKey: String {
         palette.map { $0.description }.joined(separator: "|")
@@ -41,7 +44,7 @@ struct NowPlayingScreen: View {
         }
         .padding(.horizontal, 28)
         .padding(.bottom, 12)
-        .foregroundStyle(.white)
+        .foregroundStyle(fg)
         .background { backdrop }
         .task(id: trackKey) { await updatePalette() }
         .sheet(isPresented: $showEditor) {
@@ -55,12 +58,13 @@ struct NowPlayingScreen: View {
 
     private var backdrop: some View {
         ZStack {
-            Color.black
-            MeshArtBackground(colors: palette.map { Color(uiColor: $0) })
-                .id(paletteKey)
+            scheme == .dark ? Color.black : Color.white
+            MeshArtBackground(colors: palette.map { Color(uiColor: ArtPalette.toned($0, dark: scheme == .dark)) },
+                              dark: scheme == .dark)
+                .id(paletteKey + "\(scheme == .dark)")
                 .transition(.opacity)
         }
-        .animation(.easeInOut(duration: 1.0), value: paletteKey)
+        .animation(.easeInOut(duration: 1.2), value: paletteKey)
         .ignoresSafeArea()
     }
 
@@ -80,7 +84,7 @@ struct NowPlayingScreen: View {
 
     private var artworkView: some View {
         NowPlayingArtwork(image: player.artwork)
-            .shadow(color: .black.opacity(0.35), radius: 28, y: 18)
+            .shadow(color: .black.opacity(scheme == .dark ? 0.4 : 0.22), radius: 28, y: 18)
             .scaleEffect(player.isPlaying ? 1.0 : 0.86)
             .animation(.spring(response: 0.55, dampingFraction: 0.72), value: player.isPlaying)
     }
@@ -95,7 +99,7 @@ struct NowPlayingScreen: View {
                     .lineLimit(1)
                 Text(player.displaySubtitle)
                     .font(.title3)
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(fg.opacity(0.65))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -183,12 +187,12 @@ struct NowPlayingScreen: View {
         HStack(spacing: 10) {
             Image(systemName: "speaker.fill")
                 .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(fg.opacity(0.6))
             SystemVolumeSlider()
                 .frame(height: 30)
             Image(systemName: "speaker.wave.3.fill")
                 .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(fg.opacity(0.6))
         }
     }
 
@@ -210,9 +214,9 @@ struct NowPlayingScreen: View {
         Button(action: action) {
             Image(systemName: name)
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(on ? Color.white : Color.white.opacity(0.55))
+                .foregroundStyle(on ? fg : fg.opacity(0.55))
                 .frame(width: 44, height: 44)
-                .background(Circle().fill(Color.white.opacity(on ? 0.22 : 0)))
+                .background(Circle().fill(fg.opacity(on ? 0.22 : 0)))
         }
         .buttonStyle(PressScaleStyle())
     }
@@ -222,6 +226,8 @@ struct NowPlayingScreen: View {
 
 struct NowPlayingArtwork: View {
     let image: UIImage?
+    @Environment(\.colorScheme) private var scheme
+    private var fg: Color { scheme == .dark ? .white : .black }
 
     var body: some View {
         Color.clear
@@ -232,11 +238,11 @@ struct NowPlayingArtwork: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    Color.white.opacity(0.10)
+                    fg.opacity(0.10)
                         .overlay {
                             Image(systemName: "music.note")
                                 .font(.system(size: 84, weight: .regular))
-                                .foregroundStyle(Color.white.opacity(0.35))
+                                .foregroundStyle(fg.opacity(0.35))
                         }
                 }
             }
@@ -251,6 +257,8 @@ struct ScrubSection: View {
     @ObservedObject var clock: PlayerClock
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @Environment(\.colorScheme) private var scheme
+    private var fg: Color { scheme == .dark ? .white : .black }
 
     private var shown: Double { scrubbing ? scrubValue : clock.currentTime }
     private var total: Double { max(clock.duration, 1) }
@@ -261,9 +269,9 @@ struct ScrubSection: View {
                 let width = geo.size.width
                 let progress = min(max(shown / total, 0), 1)
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.28))
+                    Capsule().fill(fg.opacity(0.28))
                     Capsule()
-                        .fill(Color.white.opacity(0.92))
+                        .fill(fg.opacity(0.92))
                         .frame(width: max(width * progress, 0))
                 }
                 .frame(height: scrubbing ? 12 : 6)
@@ -292,7 +300,7 @@ struct ScrubSection: View {
                 Text("-" + format(max(total - shown, 0)))
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(Color.white.opacity(0.6))
+            .foregroundStyle(fg.opacity(0.6))
         }
     }
 
@@ -315,7 +323,7 @@ struct PressScaleStyle: ButtonStyle {
 struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
         let v = MPVolumeView(frame: .zero)
-        v.tintColor = .white
+        v.tintColor = .label
         return v
     }
 
@@ -326,21 +334,25 @@ struct SystemVolumeSlider: UIViewRepresentable {
 
 struct MeshArtBackground: View {
     let colors: [Color]
+    var dark: Bool = true
 
     private var meshColors: [Color] {
-        let p: [Color] = colors.isEmpty
-            ? [Color(white: 0.36), Color(white: 0.26), Color(white: 0.32), Color(white: 0.22)]
-            : colors
+        let fallback: [Color] = dark
+            ? [Color(white: 0.20), Color(white: 0.14), Color(white: 0.18), Color(white: 0.11)]
+            : [Color(white: 0.96), Color(white: 0.90), Color(white: 0.93), Color(white: 0.87)]
+        let p = colors.isEmpty ? fallback : colors
         let idx = [0, 1, 2, 3, 0, 2, 1, 3, 0]
         return idx.map { p[$0 % p.count] }
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+        // Медленное, едва заметное движение, как в Apple Music.
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            MeshGradient(width: 3, height: 3, points: points(t), colors: meshColors)
+            MeshGradient(width: 3, height: 3, points: points(t), colors: meshColors,
+                         smoothsColors: true)
         }
-        .overlay(Color.black.opacity(0.22))
+        .overlay(dark ? Color.black.opacity(0.30) : Color.white.opacity(0.35))
     }
 
     private func points(_ t: Double) -> [SIMD2<Float>] {
@@ -349,13 +361,13 @@ struct MeshArtBackground: View {
         }
         return [
             SIMD2<Float>(0, 0),
-            SIMD2<Float>(0.5 + 0.12 * s(0.45, 0), 0),
+            SIMD2<Float>(0.5 + 0.06 * s(0.13, 0), 0),
             SIMD2<Float>(1, 0),
-            SIMD2<Float>(0, 0.5 + 0.12 * s(0.38, 1)),
-            SIMD2<Float>(0.5 + 0.18 * s(0.31, 2), 0.5 + 0.18 * s(0.27, 3)),
-            SIMD2<Float>(1, 0.5 + 0.12 * s(0.41, 4)),
+            SIMD2<Float>(0, 0.5 + 0.06 * s(0.11, 1)),
+            SIMD2<Float>(0.5 + 0.10 * s(0.09, 2), 0.5 + 0.10 * s(0.08, 3)),
+            SIMD2<Float>(1, 0.5 + 0.06 * s(0.12, 4)),
             SIMD2<Float>(0, 1),
-            SIMD2<Float>(0.5 + 0.12 * s(0.35, 5), 1),
+            SIMD2<Float>(0.5 + 0.06 * s(0.10, 5), 1),
             SIMD2<Float>(1, 1)
         ]
     }
@@ -364,6 +376,20 @@ struct MeshArtBackground: View {
 // MARK: - Палитра из обложки
 
 enum ArtPalette {
+    /// Приглушает цвет под тему: в тёмной темнее, в светлой ближе к белому.
+    static func toned(_ c: UIColor, dark: Bool) -> UIColor {
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        if dark {
+            return UIColor(hue: h, saturation: min(1, s * 0.95), brightness: min(b, 0.8) * 0.55, alpha: 1)
+        } else {
+            return UIColor(hue: h, saturation: s * 0.40, brightness: min(0.98, 0.84 + b * 0.14), alpha: 1)
+        }
+    }
+
     static func colors(from image: UIImage, count: Int = 4) -> [UIColor] {
         let side = 32
         let size = CGSize(width: side, height: side)

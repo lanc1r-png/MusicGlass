@@ -48,7 +48,7 @@ struct FavoriteButton: View {
             Image(systemName: favorites.contains(track) ? "heart.fill" : "heart")
                 .contentTransition(.symbolEffect(.replace))
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(favorites.contains(track) ? Color.pink : Color.white)
+                .foregroundStyle(favorites.contains(track) ? Color.pink : Color.primary)
                 .frame(width: 40, height: 40)
                 .glassEffect(.regular.interactive(), in: .circle)
         }

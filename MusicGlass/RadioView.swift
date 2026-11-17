@@ -393,7 +393,7 @@ struct LiveRow: View {
                 .font(.footnote.weight(.semibold))
             Spacer()
         }
-        .foregroundStyle(Color.white.opacity(0.75))
+        .foregroundStyle(Color.primary.opacity(0.7))
         .frame(height: 44, alignment: .center)
     }
 }
@@ -412,7 +412,7 @@ struct RadioFavoriteButton: View {
             Image(systemName: isFav ? "heart.fill" : "heart")
                 .contentTransition(.symbolEffect(.replace))
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(isFav ? Color.pink : Color.white)
+                .foregroundStyle(isFav ? Color.pink : Color.primary)
                 .frame(width: 40, height: 40)
                 .glassEffect(.regular.interactive(), in: .circle)
         }
