@@ -105,18 +105,112 @@ final class RadioLibrary: ObservableObject {
     }
 }
 
+// MARK: - Загрузка логотипов
+
+/// Быстрый загрузчик логотипов: короткие таймауты, чтобы «мёртвые» сайты не тормозили сетку.
+enum LogoLoader {
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 5
+        c.timeoutIntervalForResource = 8
+        c.requestCachePolicy = .returnCacheDataElseLoad
+        c.httpMaximumConnectionsPerHost = 6
+        return URLSession(configuration: c)
+    }()
+
+    static func image(from urlString: String) async -> UIImage? {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        guard let (data, resp) = try? await session.data(from: url) else { return nil }
+        if let http = resp as? HTTPURLResponse, http.statusCode != 200 { return nil }
+        guard data.count < 3_000_000 else { return nil }
+        return UIImage(data: data)
+    }
+}
+
+/// Готовые обложки на диске (папка кэша), чтобы при повторном открытии они появлялись мгновенно.
+enum DiskCovers {
+    private static let dir: URL = {
+        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("RadioCovers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    private static func file(_ id: String, _ side: Int, _ tag: String) -> URL {
+        dir.appendingPathComponent("\(id)_\(side)_\(tag).jpg")
+    }
+
+    static func load(id: String, side: Int) -> UIImage? {
+        // Обложка с настоящим логотипом хранится бессрочно.
+        if let img = UIImage(contentsOfFile: file(id, side, "L").path) { return img }
+        // Обложку с инициалами через 3 дня пробуем сделать заново: вдруг логотип найдётся.
+        let f = file(id, side, "I")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: f.path),
+           let date = attrs[.modificationDate] as? Date,
+           Date().timeIntervalSince(date) < 3 * 86400,
+           let img = UIImage(contentsOfFile: f.path) {
+            return img
+        }
+        return nil
+    }
+
+    static func save(_ image: UIImage, id: String, side: Int, hasLogo: Bool) {
+        guard let data = image.jpegData(compressionQuality: 0.86) else { return }
+        try? data.write(to: file(id, side, hasLogo ? "L" : "I"), options: .atomic)
+    }
+}
+
 // MARK: - Обложка станции
 
 enum StationArt {
     private static let cache = NSCache<NSString, UIImage>()
+    private static let logos = NSCache<NSString, UIImage>()
 
     static func cover(for station: RadioStation, side: CGFloat) async -> UIImage {
         let key = "\(station.id)|\(Int(side))" as NSString
         if let hit = cache.object(forKey: key) { return hit }
-        let logo = await OnlineArtwork.image(station.favicon.isEmpty ? nil : station.favicon)
+        if let disk = DiskCovers.load(id: station.id, side: Int(side)) {
+            cache.setObject(disk, forKey: key)
+            return disk
+        }
+        let logo = await logo(for: station)
         let img = compose(logo: logo, name: station.name, side: side)
+        // Если карточку уже пролистали и загрузка оборвалась, результат не запоминаем.
+        if Task.isCancelled { return img }
         cache.setObject(img, forKey: key)
+        DiskCovers.save(img, id: station.id, side: Int(side), hasLogo: logo != nil)
         return img
+    }
+
+    /// Ищем логотип: из каталога, затем по сайту станции.
+    static func logo(for station: RadioStation) async -> UIImage? {
+        let key = station.id as NSString
+        if let hit = logos.object(forKey: key) { return hit }
+        for u in logoCandidates(for: station) {
+            if Task.isCancelled { return nil }
+            if let img = await LogoLoader.image(from: u),
+               min(img.size.width, img.size.height) >= 32 {
+                logos.setObject(img, forKey: key)
+                return img
+            }
+        }
+        return nil
+    }
+
+    private static func logoCandidates(for s: RadioStation) -> [String] {
+        var out: [String] = []
+        if !s.favicon.isEmpty { out.append(s.favicon) }
+        let page = s.homepage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !page.isEmpty {
+            let full = page.contains("://") ? page : "http://" + page
+            if let host = URL(string: full)?.host, !host.isEmpty {
+                out.append("https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&url=https://\(host)&size=128")
+                out.append("https://\(host)/apple-touch-icon.png")
+            }
+        }
+        return out
     }
 
     /// Градиент из цветов логотипа, по центру логотип на белой плитке (или инициалы).
@@ -219,6 +313,67 @@ struct StationCover: View {
     }
 }
 
+// MARK: - Кэш списков станций
+
+private struct RadioCacheEntry: Codable {
+    let date: Date
+    let stations: [RadioStation]
+}
+
+/// Запоминает списки станций (в памяти и на диске), чтобы страны и жанры открывались мгновенно.
+enum RadioCache {
+    private static let lock = NSLock()
+    private static var memory: [String: RadioCacheEntry] = [:]
+    static let freshFor: TimeInterval = 600
+    private static let keepFor: TimeInterval = 7 * 86400
+
+    private static let dir: URL = {
+        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("RadioLists", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    static func key(name: String?, tag: String?, countryCode: String?, limit: Int) -> String {
+        "n=\(name ?? "")|t=\(tag ?? "")|c=\(countryCode ?? "")|l=\(limit)"
+    }
+
+    private static func file(for key: String) -> URL {
+        var h = 5381
+        for u in key.unicodeScalars { h = (h &* 33 &+ Int(u.value)) & 0x7fffffff }
+        return dir.appendingPathComponent("\(h).json")
+    }
+
+    static func get(_ key: String) -> (stations: [RadioStation], fresh: Bool)? {
+        lock.lock()
+        var entry = memory[key]
+        lock.unlock()
+        if entry == nil,
+           let data = try? Data(contentsOf: file(for: key)),
+           let e = try? JSONDecoder().decode(RadioCacheEntry.self, from: data) {
+            entry = e
+            lock.lock()
+            memory[key] = e
+            lock.unlock()
+        }
+        guard let e = entry, !e.stations.isEmpty else { return nil }
+        let age = Date().timeIntervalSince(e.date)
+        guard age < keepFor else { return nil }
+        return (e.stations, age < freshFor)
+    }
+
+    static func put(_ key: String, _ list: [RadioStation]) {
+        guard !list.isEmpty else { return }
+        let e = RadioCacheEntry(date: Date(), stations: list)
+        lock.lock()
+        memory[key] = e
+        lock.unlock()
+        if let data = try? JSONEncoder().encode(e) {
+            try? data.write(to: file(for: key), options: .atomic)
+        }
+    }
+}
+
 // MARK: - API каталога Radio Browser
 
 enum RadioError: LocalizedError {
@@ -277,10 +432,17 @@ enum RadioAPI {
         "https://at1.api.radio-browser.info"
     ]
 
+    /// Сохранённый список (если есть) и признак, что он ещё свежий.
+    static func cached(name: String? = nil, tag: String? = nil,
+                       countryCode: String? = nil,
+                       limit: Int = 60) -> (stations: [RadioStation], fresh: Bool)? {
+        RadioCache.get(RadioCache.key(name: name, tag: tag, countryCode: countryCode, limit: limit))
+    }
+
     static func search(name: String? = nil, tag: String? = nil,
                        countryCode: String? = nil, limit: Int = 60) async throws -> [RadioStation] {
         var items = [
-            URLQueryItem(name: "limit", value: "\(limit * 2)"),
+            URLQueryItem(name: "limit", value: "\(limit + 30)"),
             URLQueryItem(name: "hidebroken", value: "true"),
             URLQueryItem(name: "order", value: "votes"),
             URLQueryItem(name: "reverse", value: "true")
@@ -291,35 +453,64 @@ enum RadioAPI {
             items.append(URLQueryItem(name: "countrycode", value: countryCode))
         }
 
-        var lastError: Error = RadioError.network
-        for server in servers.shuffled() {
-            guard var comps = URLComponents(string: server + "/json/stations/search") else { continue }
-            comps.queryItems = items
-            guard let url = comps.url else { continue }
-            var req = URLRequest(url: url)
-            req.timeoutInterval = 12
-            req.setValue("Opal/1.0", forHTTPHeaderField: "User-Agent")
-            do {
-                let (data, resp) = try await URLSession.shared.data(for: req)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-                    lastError = RadioError.network
-                    continue
-                }
-                let list = try JSONDecoder().decode([RadioLossy<StationDTO>].self, from: data)
-                var seen = Set<String>()
-                var out: [RadioStation] = []
-                for s in list.compactMap({ $0.value?.model }) {
-                    if seen.insert(s.name.lowercased()).inserted { out.append(s) }
-                    if out.count >= limit { break }
-                }
-                return out
-            } catch is DecodingError {
-                lastError = RadioError.decoding
-            } catch {
-                if Task.isCancelled { throw error }
-                lastError = RadioError.network
-            }
+        // Спрашиваем сразу два сервера, берём того, кто ответил первым.
+        // Если оба недоступны, пробуем два оставшихся.
+        let shuffled = servers.shuffled()
+        let list: [RadioStation]
+        do {
+            list = try await race(Array(shuffled.prefix(2)), items: items, limit: limit)
+        } catch {
+            if Task.isCancelled { throw error }
+            list = try await race(Array(shuffled.suffix(2)), items: items, limit: limit)
         }
-        throw lastError
+        RadioCache.put(RadioCache.key(name: name, tag: tag, countryCode: countryCode, limit: limit), list)
+        return list
+    }
+
+    private static func race(_ servers: [String], items: [URLQueryItem],
+                             limit: Int) async throws -> [RadioStation] {
+        try await withThrowingTaskGroup(of: [RadioStation].self) { group -> [RadioStation] in
+            for s in servers {
+                group.addTask { try await fetchOne(server: s, items: items, limit: limit) }
+            }
+            var lastError: Error = RadioError.network
+            while true {
+                do {
+                    guard let list = try await group.next() else { break }
+                    group.cancelAll()
+                    return list
+                } catch {
+                    lastError = error
+                }
+            }
+            throw lastError
+        }
+    }
+
+    private static func fetchOne(server: String, items: [URLQueryItem],
+                                 limit: Int) async throws -> [RadioStation] {
+        guard var comps = URLComponents(string: server + "/json/stations/search") else {
+            throw RadioError.network
+        }
+        comps.queryItems = items
+        guard let url = comps.url else { throw RadioError.network }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 6
+        req.setValue("Opal/1.0", forHTTPHeaderField: "User-Agent")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw RadioError.network }
+        let decoded: [RadioLossy<StationDTO>]
+        do {
+            decoded = try JSONDecoder().decode([RadioLossy<StationDTO>].self, from: data)
+        } catch {
+            throw RadioError.decoding
+        }
+        var seen = Set<String>()
+        var out: [RadioStation] = []
+        for s in decoded.compactMap({ $0.value?.model }) {
+            if seen.insert(s.name.lowercased()).inserted { out.append(s) }
+            if out.count >= limit { break }
+        }
+        return out
     }
 }
