@@ -17,9 +17,6 @@ struct RootView: View {
             Tab("Радио", systemImage: "dot.radiowaves.left.and.right") {
                 RadioView()
             }
-            Tab("Источники", systemImage: "folder") {
-                SourcesView()
-            }
             Tab("Поиск", systemImage: "magnifyingglass", role: .search) {
                 SearchView()
             }

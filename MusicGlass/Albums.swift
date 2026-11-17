@@ -3,15 +3,15 @@ import SwiftUI
 // MARK: - Кнопки «Играть» и «Вперемешку»
 
 struct PlayShuffleButtons: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     let tracks: [Track]
 
     var body: some View {
         HStack(spacing: 12) {
             Button {
                 Haptics.tap()
-                if player.shuffleOn { player.toggleShuffle() }
-                player.play(tracks, startAt: 0)
+                if player?.shuffleOn == true { player?.toggleShuffle() }
+                player?.play(tracks, startAt: 0)
             } label: {
                 Label("Играть", systemImage: "play.fill")
                     .font(.headline)
@@ -19,7 +19,7 @@ struct PlayShuffleButtons: View {
             }
             Button {
                 Haptics.tap()
-                player.playShuffled(tracks)
+                player?.playShuffled(tracks)
             } label: {
                 Label("Вперемешку", systemImage: "shuffle")
                     .font(.headline)
@@ -37,7 +37,7 @@ struct PlayShuffleButtons: View {
 // MARK: - Карточка альбома
 
 struct AlbumCard: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     let album: Album
 
     var body: some View {
@@ -54,12 +54,12 @@ struct AlbumCard: View {
         }
         .contextMenu {
             Button {
-                player.play(album.tracks, startAt: 0)
+                player?.play(album.tracks, startAt: 0)
             } label: {
                 Label("Играть", systemImage: "play.fill")
             }
             Button {
-                player.playShuffled(album.tracks)
+                player?.playShuffled(album.tracks)
             } label: {
                 Label("Вперемешку", systemImage: "shuffle")
             }
@@ -97,7 +97,7 @@ struct AlbumsView: View {
 // MARK: - Страница альбома
 
 struct AlbumDetailView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @EnvironmentObject var library: LibraryStore
     let album: Album
     @State private var tint: Color = .clear
@@ -111,12 +111,11 @@ struct AlbumDetailView: View {
             header
             PlayShuffleButtons(tracks: album.tracks)
             ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
-                AlbumTrackRow(index: index, track: track,
-                              isCurrent: player.currentTrack?.id == track.id)
+                AlbumTrackRow(index: index, track: track)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         Haptics.tap()
-                        player.play(album.tracks, startAt: index)
+                        player?.play(album.tracks, startAt: index)
                     }
             }
             Text("\(album.tracks.count) песен, \(totalMinutes) мин.")
@@ -173,10 +172,11 @@ struct AlbumDetailView: View {
 }
 
 struct AlbumTrackRow: View {
-    @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var status = PlaybackStatus.shared
     let index: Int
     let track: Track
-    let isCurrent: Bool
+
+    private var isCurrent: Bool { status.currentID == track.id }
     @State private var showEditor = false
 
     private var durationText: String {
@@ -190,7 +190,7 @@ struct AlbumTrackRow: View {
                 if isCurrent {
                     Image(systemName: "waveform")
                         .foregroundStyle(.pink)
-                        .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                        .symbolEffect(.variableColor.iterative, isActive: status.isPlaying)
                 } else {
                     Text("\(index + 1)")
                         .foregroundStyle(.secondary)

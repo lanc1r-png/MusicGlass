@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import AVFoundation
 import MediaPlayer
 import UIKit
@@ -10,6 +11,30 @@ enum RepeatMode { case off, all, one }
 final class PlayerClock: ObservableObject {
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
+}
+
+/// Лёгкое состояние «что играет»: на него подписаны строки списков,
+/// поэтому они не перерисовываются от каждой мелочи в плеере (обложка, ошибки, эфир).
+@MainActor
+final class PlaybackStatus: ObservableObject {
+    static let shared = PlaybackStatus()
+    @Published private(set) var currentID: String?
+    @Published private(set) var isPlaying = false
+
+    func update(id: String?, playing: Bool) {
+        if currentID != id { currentID = id }
+        if isPlaying != playing { isPlaying = playing }
+    }
+}
+
+/// Ссылка на плеер для кнопок и списков без подписки на его изменения.
+extension EnvironmentValues {
+    @Entry var playerControl: PlayerStore? = nil
+}
+
+/// Настройка плавного перехода между треками (0 = выключен, треки идут без паузы).
+enum PlaybackSettings {
+    static let crossfadeKey = "crossfadeSeconds"
 }
 
 /// Читает название песни, которое радиостанция передаёт в потоке (ICY).
@@ -32,12 +57,14 @@ final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate
 
 @MainActor
 final class PlayerStore: ObservableObject {
-    @Published private(set) var queue: [Track] = []
-    @Published private(set) var currentIndex: Int?
-    @Published private(set) var isPlaying = false
+    @Published private(set) var queue: [Track] = [] { didSet { syncStatus() } }
+    @Published private(set) var currentIndex: Int? { didSet { syncStatus() } }
+    @Published private(set) var isPlaying = false { didSet { syncStatus() } }
     @Published private(set) var artwork: UIImage?
     @Published private(set) var shuffleOn = false
-    @Published var repeatMode: RepeatMode = .off
+    @Published var repeatMode: RepeatMode = .off {
+        didSet { cancelPrepared() }
+    }
     /// Текст ошибки воспроизведения (недоступный трек или станция, нет сети).
     @Published var playbackError: String?
     /// true, если сейчас играет радиостанция (прямой эфир).
@@ -47,10 +74,18 @@ final class PlayerStore: ObservableObject {
 
     let clock = PlayerClock()
 
-    private let player = AVPlayer()
+    // Два плеера: пока играет основной, следующий трек заранее загружается во второй.
+    // Так переход идёт без паузы или с плавным затуханием.
+    private var player = AVPlayer()
+    private var standby = AVPlayer()
+    private var prepared: (index: Int, trackID: String)?
+    private var fading = false
+    private var fadeTask: Task<Void, Never>?
+
     private weak var library: LibraryStore?
     private var originalQueue: [Track] = []
     private var timeObserver: Any?
+    private weak var timeObserverOwner: AVPlayer?
     private var endObserver: NSObjectProtocol?
     private var statusObserver: AnyCancellable?
     private let metadataReader = LiveMetadataReader()
@@ -59,6 +94,10 @@ final class PlayerStore: ObservableObject {
     var currentTrack: Track? {
         guard let i = currentIndex, queue.indices.contains(i) else { return nil }
         return queue[i]
+    }
+
+    private var crossfade: Double {
+        max(0, UserDefaults.standard.double(forKey: PlaybackSettings.crossfadeKey))
     }
 
     /// Что показывать в заголовке (для радио это песня или название станции).
@@ -93,17 +132,15 @@ final class PlayerStore: ObservableObject {
         configureAudioSession()
         setupRemoteCommands()
         observeInterruptions()
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
-            queue: .main
-        ) { [weak self] time in
-            let seconds = time.seconds
-            Task { @MainActor in self?.tick(seconds) }
-        }
+        installTimeObserver()
     }
 
     func attach(_ library: LibraryStore) {
         self.library = library
+    }
+
+    private func syncStatus() {
+        PlaybackStatus.shared.update(id: currentTrack?.id, playing: isPlaying)
     }
 
     // MARK: Управление
@@ -131,6 +168,7 @@ final class PlayerStore: ObservableObject {
 
     func toggleShuffle() {
         shuffleOn.toggle()
+        cancelPrepared()
         guard let current = currentTrack else { return }
         let base = originalQueue.isEmpty ? queue : originalQueue
         if shuffleOn {
@@ -154,12 +192,14 @@ final class PlayerStore: ObservableObject {
 
     func resume() {
         guard currentTrack != nil else { return }
+        player.volume = 1
         player.play()
         isPlaying = true
         updateNowPlaying()
     }
 
     func pause() {
+        stopFade()
         player.pause()
         isPlaying = false
         updateNowPlaying()
@@ -184,23 +224,31 @@ final class PlayerStore: ObservableObject {
     }
 
     func previous() {
-        guard let i = currentIndex else { return }
-        if isLive {
-            guard queue.count > 1 else { return }
-            currentIndex = i > 0 ? i - 1 : queue.count - 1
-            loadCurrent(autoplay: true)
-            return
-        }
-        if clock.currentTime > 3 || i == 0 {
-            seek(to: 0)
+        guard currentIndex != nil else { return }
+        if isLive || clock.currentTime <= 3 {
+            skipBack()
         } else {
+            seek(to: 0)
+        }
+    }
+
+    /// Всегда на предыдущий трек (для свайпа по мини-плееру).
+    func skipBack() {
+        guard let i = currentIndex else { return }
+        if i > 0 {
             currentIndex = i - 1
             loadCurrent(autoplay: true)
+        } else if (repeatMode == .all || isLive), queue.count > 1 {
+            currentIndex = queue.count - 1
+            loadCurrent(autoplay: true)
+        } else {
+            seek(to: 0)
         }
     }
 
     func seek(to seconds: Double) {
         guard !isLive else { return }
+        stopFade()
         let t = max(0, seconds)
         player.seek(to: CMTime(seconds: t, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
@@ -208,41 +256,42 @@ final class PlayerStore: ObservableObject {
         updateNowPlaying()
     }
 
-    // MARK: Внутреннее
+    // MARK: Источник трека
+
+    private func source(for track: Track) -> (url: URL, localURL: URL?)? {
+        if RadioID.isRadio(track) {
+            guard let s = RadioCatalog.shared.info(for: track), let u = URL(string: s.streamURL) else { return nil }
+            return (u, nil)
+        }
+        if OnlineID.isOnline(track) {
+            guard let u = AudiusAPI.streamURL(trackID: OnlineID.audiusID(of: track)) else { return nil }
+            return (u, nil)
+        }
+        guard let u = library?.url(for: track) else { return nil }
+        return (u, u)
+    }
+
+    private func failMessage(for track: Track) -> String {
+        if RadioID.isRadio(track) { return "Станция недоступна. Выберите другую." }
+        if OnlineID.isOnline(track) {
+            return "Не удалось воспроизвести трек. Проверьте интернет или выберите другой: он мог стать недоступным."
+        }
+        return "Не удалось открыть файл."
+    }
+
+    // MARK: Загрузка трека
 
     private func loadCurrent(autoplay: Bool) {
+        stopFade()
+        cancelPrepared()
         guard let track = currentTrack else {
             pause()
             return
         }
-
         let isRadio = RadioID.isRadio(track)
-        let isOnline = OnlineID.isOnline(track)
-
-        // Откуда играть: радиостанция, онлайн-трек (Audius) или файл.
-        let url: URL
-        let localURL: URL?
-        if isRadio {
-            guard let station = RadioCatalog.shared.info(for: track),
-                  let u = URL(string: station.streamURL) else {
-                pause()
-                playbackError = "Не удалось открыть станцию."
-                return
-            }
-            url = u
-            localURL = nil
-        } else if isOnline {
-            guard let u = AudiusAPI.streamURL(trackID: OnlineID.audiusID(of: track)) else {
-                pause()
-                return
-            }
-            url = u
-            localURL = nil
-        } else if let u = library?.url(for: track) {
-            url = u
-            localURL = u
-        } else {
+        guard let src = source(for: track) else {
             pause()
+            if isRadio { playbackError = "Не удалось открыть станцию." }
             return
         }
 
@@ -251,8 +300,7 @@ final class PlayerStore: ObservableObject {
         liveTitle = nil
         MPRemoteCommandCenter.shared().changePlaybackPositionCommand.isEnabled = !isRadio
 
-        let item = AVPlayerItem(url: url)
-
+        let item = AVPlayerItem(url: src.url)
         if isRadio {
             let out = AVPlayerItemMetadataOutput(identifiers: nil)
             metadataReader.onTitle = { [weak self] title in
@@ -265,31 +313,9 @@ final class PlayerStore: ObservableObject {
             metadataOutput = nil
         }
 
+        player.volume = 1
         player.replaceCurrentItem(with: item)
-
-        let failMessage: String
-        if isRadio {
-            failMessage = "Станция недоступна. Выберите другую."
-        } else if isOnline {
-            failMessage = "Не удалось воспроизвести трек. Проверьте интернет или выберите другой: он мог стать недоступным."
-        } else {
-            failMessage = "Не удалось открыть файл."
-        }
-
-        // Ошибка загрузки (трек недоступен, нет сети)
-        statusObserver = item.publisher(for: \.status)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                guard status == .failed else { return }
-                Task { @MainActor in self?.handleFailure(message: failMessage) }
-            }
-
-        if let o = endObserver { NotificationCenter.default.removeObserver(o) }
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.trackEnded() }
-        }
+        observe(item, track: track)
 
         clock.currentTime = 0
         clock.duration = track.duration
@@ -299,7 +325,28 @@ final class PlayerStore: ObservableObject {
             isPlaying = true
         }
         updateNowPlaying()
+        loadArtwork(for: track, localURL: src.localURL)
+    }
 
+    private func observe(_ item: AVPlayerItem, track: Track) {
+        let message = failMessage(for: track)
+        statusObserver = item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard status == .failed else { return }
+                Task { @MainActor in self?.handleFailure(message: message) }
+            }
+
+        if let o = endObserver { NotificationCenter.default.removeObserver(o) }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.trackEnded() }
+        }
+    }
+
+    private func loadArtwork(for track: Track, localURL: URL?) {
+        let isRadio = RadioID.isRadio(track)
         Task {
             let img: UIImage?
             if let localURL {
@@ -320,12 +367,121 @@ final class PlayerStore: ObservableObject {
         }
     }
 
+    // MARK: Бесшовный переход и плавное затухание
+
+    private func upcomingIndex() -> Int? {
+        guard let i = currentIndex, repeatMode != .one, !isLive else { return nil }
+        if i + 1 < queue.count { return i + 1 }
+        if repeatMode == .all, queue.count > 1 { return 0 }
+        return nil
+    }
+
+    /// Заранее загружает следующий трек во второй плеер.
+    private func prepareNext() {
+        guard prepared == nil, !fading, let ni = upcomingIndex() else { return }
+        let t = queue[ni]
+        guard !RadioID.isRadio(t), let src = source(for: t) else { return }
+        standby.replaceCurrentItem(with: AVPlayerItem(url: src.url))
+        standby.volume = 0
+        standby.pause()
+        prepared = (ni, t.id)
+    }
+
+    private func cancelPrepared() {
+        guard prepared != nil else { return }
+        prepared = nil
+        if !fading {
+            standby.pause()
+            standby.replaceCurrentItem(with: nil)
+        }
+    }
+
+    /// Переключается на заранее загруженный трек; при fade > 0 с плавным затуханием.
+    private func transitionToPrepared(fade: Double) -> Bool {
+        guard let p = prepared, queue.indices.contains(p.index), queue[p.index].id == p.trackID,
+              standby.currentItem != nil else {
+            cancelPrepared()
+            return false
+        }
+        let track = queue[p.index]
+        let old = player
+        player = standby
+        standby = old
+        prepared = nil
+        installTimeObserver()
+
+        currentIndex = p.index
+        isLive = false
+        liveTitle = nil
+        playbackError = nil
+        metadataOutput = nil
+        MPRemoteCommandCenter.shared().changePlaybackPositionCommand.isEnabled = true
+        if let item = player.currentItem { observe(item, track: track) }
+
+        clock.currentTime = 0
+        clock.duration = track.duration
+        player.volume = fade > 0 ? 0 : 1
+        player.play()
+        isPlaying = true
+        artwork = nil
+        updateNowPlaying()
+        loadArtwork(for: track, localURL: library?.url(for: track))
+
+        if fade > 0 {
+            fading = true
+            let incoming = player
+            fadeTask = Task { @MainActor [weak self] in
+                let steps = max(10, Int(fade * 20))
+                for s in 1...steps {
+                    try? await Task.sleep(nanoseconds: UInt64(fade / Double(steps) * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    let k = Double(s) / Double(steps)
+                    // Равномощная кривая: громкость не «проваливается» в середине.
+                    incoming.volume = Float(sin(k * .pi / 2))
+                    old.volume = Float(cos(k * .pi / 2))
+                }
+                self?.stopFade()
+            }
+        } else {
+            old.pause()
+            old.replaceCurrentItem(with: nil)
+        }
+        return true
+    }
+
+    /// Мгновенно завершает затухание: старый трек выключается, новый звучит в полную силу.
+    private func stopFade() {
+        fadeTask?.cancel()
+        fadeTask = nil
+        guard fading else { return }
+        fading = false
+        standby.pause()
+        standby.replaceCurrentItem(with: nil)
+        standby.volume = 1
+        player.volume = 1
+    }
+
+    private func installTimeObserver() {
+        if let o = timeObserver { timeObserverOwner?.removeTimeObserver(o) }
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            let seconds = time.seconds
+            Task { @MainActor in self?.tick(seconds) }
+        }
+        timeObserverOwner = player
+    }
+
+    // MARK: Внутреннее
+
     private func setLiveTitle(_ title: String) {
         liveTitle = title
         updateNowPlaying()
     }
 
     private func handleFailure(message: String) {
+        stopFade()
         player.pause()
         isPlaying = false
         playbackError = message
@@ -340,16 +496,28 @@ final class PlayerStore: ObservableObject {
         if repeatMode == .one {
             seek(to: 0)
             resume()
-        } else {
-            next()
+            return
         }
+        // Следующий трек уже загружен: включаем его без паузы.
+        if transitionToPrepared(fade: 0) { return }
+        next()
     }
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         clock.currentTime = seconds
-        if !isLive, let d = player.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - clock.duration) > 1 {
+        guard !isLive else { return }
+        if let d = player.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - clock.duration) > 1 {
             clock.duration = d
+        }
+        guard isPlaying, !fading else { return }
+        let d = clock.duration
+        guard d > 0 else { return }
+        let remaining = d - seconds
+        let fade = crossfade
+        if remaining < fade + 12 { prepareNext() }
+        if fade > 0, d > fade * 2 + 5, remaining <= fade, remaining > 0.5 {
+            _ = transitionToPrepared(fade: remaining)
         }
     }
 
@@ -369,6 +537,7 @@ final class PlayerStore: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if type == .began {
+                    self.stopFade()
                     self.isPlaying = false
                     self.updateNowPlaying()
                 } else if AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {

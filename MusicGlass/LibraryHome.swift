@@ -2,33 +2,6 @@ import SwiftUI
 import PhotosUI
 import UIKit
 
-// Старая строка категории (может использоваться на других экранах, оставлена как есть).
-struct CategoryRow: View {
-    let title: String
-    let icon: String
-    var detail: String? = nil
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundStyle(Color.pink)
-                .frame(width: 30)
-            Text(title)
-                .font(.title3)
-            Spacer()
-            if let detail {
-                Text(detail).foregroundStyle(.secondary)
-            }
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 12)
-        .contentShape(Rectangle())
-    }
-}
-
 // MARK: - Строка категории в стиле Apple Music
 
 struct LibraryCategoryLabel: View {
@@ -85,7 +58,7 @@ struct LibraryView: View {
                         ContentUnavailableView(
                             "Пока пусто",
                             systemImage: "folder.badge.plus",
-                            description: Text("Положите музыку в папку приложения в «Файлах» или добавьте её на вкладке «Источники».")
+                            description: Text("Положите музыку в «Файлы» → «На iPhone» → «Opal» → «Музыка». Подробнее в профиле (кружок вверху справа).")
                         )
                     }
                 } else {
@@ -240,20 +213,19 @@ struct LibraryView: View {
         case "favorites": FavoritesView()
         case "artists": ArtistsView()
         case "albums": AlbumsView()
-        case "songs": SongsView(title: "Песни", tracks: library.tracks)
+        case "songs": SongsView(title: "Песни", tracks: library.tracks, indexed: true)
         default: CustomCategoryView(categoryID: item.id)
         }
     }
 
     private func count(for item: LibraryCategory) -> String {
         switch item.id {
-        case "favorites": return "\(favorites.ids.count)"
+        case "favorites": return "\(favorites.ids.intersection(library.trackIDs).count)"
         case "artists": return "\(library.artists.count)"
         case "albums": return "\(library.albums.count)"
         case "songs": return "\(library.tracks.count)"
         default:
-            let all = Set(library.tracks.map { $0.id })
-            return "\(item.trackIDs.filter { all.contains($0) }.count)"
+            return "\(item.trackIDs.filter { library.trackIDs.contains($0) }.count)"
         }
     }
 
@@ -317,12 +289,13 @@ struct CardPressStyle: ButtonStyle {
 }
 
 struct RecentAlbumCard: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
+    @ObservedObject private var status = PlaybackStatus.shared
     let album: Album
     let open: () -> Void
 
     private var isCurrent: Bool {
-        guard let id = player.currentTrack?.id else { return false }
+        guard let id = status.currentID else { return false }
         return album.tracks.contains { $0.id == id }
     }
 
@@ -342,13 +315,13 @@ struct RecentAlbumCard: View {
                 Button {
                     Haptics.tap()
                     if isCurrent {
-                        player.togglePlayPause()
+                        player?.togglePlayPause()
                     } else {
-                        if player.shuffleOn { player.toggleShuffle() }
-                        player.play(album.tracks, startAt: 0)
+                        if player?.shuffleOn == true { player?.toggleShuffle() }
+                        player?.play(album.tracks, startAt: 0)
                     }
                 } label: {
-                    Image(systemName: isCurrent && player.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: isCurrent && status.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .contentTransition(.symbolEffect(.replace))
@@ -377,12 +350,12 @@ struct RecentAlbumCard: View {
         }
         .contextMenu {
             Button {
-                player.play(album.tracks, startAt: 0)
+                player?.play(album.tracks, startAt: 0)
             } label: {
                 Label("Играть", systemImage: "play.fill")
             }
             Button {
-                player.playShuffled(album.tracks)
+                player?.playShuffled(album.tracks)
             } label: {
                 Label("Вперемешку", systemImage: "shuffle")
             }
@@ -395,7 +368,7 @@ struct RecentAlbumCard: View {
 
 struct CustomCategoryView: View {
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @ObservedObject private var layout = LibraryLayout.shared
     let categoryID: String
     @State private var showEditor = false
@@ -404,8 +377,7 @@ struct CustomCategoryView: View {
 
     private var tracks: [Track] {
         guard let c = category else { return [] }
-        let map = Dictionary(library.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        return c.trackIDs.compactMap { map[$0] }
+        return c.trackIDs.compactMap { library.byID[$0] }
     }
 
     var body: some View {
@@ -421,11 +393,11 @@ struct CustomCategoryView: View {
                 List {
                     PlayShuffleButtons(tracks: list)
                     ForEach(Array(list.enumerated()), id: \.element.id) { index, track in
-                        TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+                        TrackRow(track: track)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 Haptics.tap()
-                                player.play(list, startAt: index)
+                                player?.play(list, startAt: index)
                             }
                     }
                     .onDelete { offsets in
@@ -647,6 +619,13 @@ struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pickerItem: PhotosPickerItem?
     @State private var loadingPhoto = false
+    @AppStorage(PlaybackSettings.crossfadeKey) private var crossfade: Double = 0
+
+    private var filesAppURL: URL? {
+        let path = library.musicFolderURL.path
+        guard let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        return URL(string: "shareddocuments://" + encoded)
+    }
 
     var body: some View {
         NavigationStack {
@@ -696,11 +675,61 @@ struct ProfileView: View {
                         }
                     }
                 }
+                Section {
+                    if let url = filesAppURL {
+                        Link(destination: url) {
+                            Label("Открыть папку «Музыка»", systemImage: "folder")
+                        }
+                    }
+                    Button {
+                        Task { await library.rescan(userInitiated: true) }
+                    } label: {
+                        if library.isScanning {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Сканирую…")
+                            }
+                        } else {
+                            Label("Обновить медиатеку", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(library.isScanning)
+                } header: {
+                    Text("Музыка")
+                } footer: {
+                    Text("Кладите аудиофайлы или целые папки в «Файлы» → «На iPhone» → «Opal» → «Музыка». Файлы читаются на месте и никуда не копируются, медиатека обновляется сама при каждом открытии приложения.")
+                }
+
+                Section {
+                    Toggle(isOn: Binding(get: { crossfade > 0 },
+                                         set: { crossfade = $0 ? 6 : 0 })) {
+                        Label("Плавный переход", systemImage: "wave.3.right")
+                    }
+                    if crossfade > 0 {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Длительность")
+                                Spacer()
+                                Text("\(Int(crossfade)) с")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $crossfade, in: 1...12, step: 1)
+                        }
+                    }
+                } header: {
+                    Text("Воспроизведение")
+                } footer: {
+                    Text(crossfade > 0
+                         ? "Конец трека плавно затихает, а следующий так же плавно нарастает."
+                         : "Треки идут друг за другом без паузы: следующий загружается заранее.")
+                }
+
                 Section("Медиатека") {
                     LabeledContent("Песни", value: "\(library.tracks.count)")
                     LabeledContent("Альбомы", value: "\(library.albums.count)")
                     LabeledContent("Исполнители", value: "\(library.artists.count)")
-                    LabeledContent("В избранном", value: "\(favorites.ids.count)")
+                    LabeledContent("В избранном", value: "\(favorites.ids.intersection(library.trackIDs).count)")
                     LabeledContent("Свои категории", value: "\(layout.custom.count)")
                 }
             }

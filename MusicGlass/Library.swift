@@ -65,6 +65,7 @@ enum LibraryScanner {
         let files = listFiles(in: root)
         let rootPath = root.standardizedFileURL.path
         var out: [Track] = []
+        var fresh: [(id: String, rel: String, file: URL)] = []
         for file in files {
             var rel = file.standardizedFileURL.path
             if rel.hasPrefix(rootPath) { rel.removeFirst(rootPath.count) }
@@ -72,10 +73,32 @@ enum LibraryScanner {
             let id = folderID + "/" + rel
             if let old = existing[id] {
                 out.append(old)
-                continue
+            } else {
+                fresh.append((id, rel, file))
             }
-            out.append(await readTrack(id: id, folderID: folderID, rel: rel, file: file))
         }
+        guard !fresh.isEmpty else { return out }
+
+        // Новые файлы читаем параллельно, но не больше 6 одновременно.
+        let read = await withTaskGroup(of: Track.self, returning: [Track].self) { group in
+            var result: [Track] = []
+            var next = 0
+            while next < min(6, fresh.count) {
+                let f = fresh[next]
+                next += 1
+                group.addTask { await readTrack(id: f.id, folderID: folderID, rel: f.rel, file: f.file) }
+            }
+            while let t = await group.next() {
+                result.append(t)
+                if next < fresh.count {
+                    let f = fresh[next]
+                    next += 1
+                    group.addTask { await readTrack(id: f.id, folderID: folderID, rel: f.rel, file: f.file) }
+                }
+            }
+            return result
+        }
+        out.append(contentsOf: read)
         return out
     }
 
@@ -108,24 +131,62 @@ final class ArtworkLoader: @unchecked Sendable {
     static let shared = ArtworkLoader()
     private let cache = NSCache<NSString, UIImage>()
 
+    /// Готовые уменьшенные обложки на диске: после перезапуска не нужно снова читать их из файлов.
+    private let diskDir: URL = {
+        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Artwork", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
     func clear() {
         cache.removeAllObjects()
     }
 
     func image(for track: Track, url: URL, maxSize: CGFloat) async -> UIImage? {
-        let key = "\(track.id)|\(Int(maxSize))" as NSString
+        // Дата изменения файла входит в ключ: после правки тегов обложка обновится сама.
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        let keyString = "\(track.id)|\(Int(maxSize))|\(Int(modified))"
+        let key = keyString as NSString
         if let hit = cache.object(forKey: key) { return hit }
+
+        let name = Self.hash(keyString)
+        let file = diskDir.appendingPathComponent(name + ".jpg")
+        let noArt = diskDir.appendingPathComponent(name + ".none")
+        if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
+            let ready = await img.byPreparingForDisplay() ?? img
+            cache.setObject(ready, forKey: key)
+            return ready
+        }
+        if FileManager.default.fileExists(atPath: noArt.path) { return nil }
+
         let asset = AVURLAsset(url: url)
         guard let items = try? await asset.load(.commonMetadata),
               let item = AVMetadataItem.metadataItems(from: items, filteredByIdentifier: .commonIdentifierArtwork).first,
               let data = try? await item.load(.dataValue),
-              let full = UIImage(data: data) else { return nil }
+              let full = UIImage(data: data) else {
+            FileManager.default.createFile(atPath: noArt.path, contents: Data())
+            return nil
+        }
         let longest = max(full.size.width, full.size.height)
         let scale = min(1, maxSize / max(longest, 1))
         let target = CGSize(width: full.size.width * scale, height: full.size.height * scale)
         let thumb = await full.byPreparingThumbnail(ofSize: target) ?? full
         cache.setObject(thumb, forKey: key)
+        if let jpg = thumb.jpegData(compressionQuality: 0.85) {
+            try? jpg.write(to: file, options: .atomic)
+        }
         return thumb
+    }
+
+    private static func hash(_ s: String) -> String {
+        var h: UInt64 = 1469598103934665603
+        for b in s.utf8 {
+            h ^= UInt64(b)
+            h = h &* 1099511628211
+        }
+        return String(h, radix: 36)
     }
 }
 
@@ -139,14 +200,23 @@ final class LibraryStore: ObservableObject {
     }
     @Published private(set) var albums: [Album] = []
     @Published private(set) var artists: [Artist] = []
+    /// Показывается только при первом сканировании или когда пользователь сам нажал «Обновить».
     @Published private(set) var isScanning = false
     @Published private(set) var artworkVersion = 0
 
+    /// Быстрый доступ к трекам по id (для избранного и своих категорий).
+    private(set) var trackIDs: Set<String> = []
+    private(set) var byID: [String: Track] = [:]
+
     static let localID = "local"
     private var roots: [String: URL] = [:]
+    private var scanning = false
 
-    var folderSources: [MusicFolder] { folders.filter { $0.isFile != true } }
-    var fileSourceCount: Int { folders.filter { $0.isFile == true }.count }
+    /// Папка «Музыка» в «Файлах».
+    var musicFolderURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Музыка", isDirectory: true)
+    }
 
     private var supportDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -179,62 +249,18 @@ final class LibraryStore: ObservableObject {
         saveTracks()
     }
 
-    // Папки и файлы
-
-    func addFolders(_ urls: [URL]) {
-        add(urls, isFile: false)
-    }
-
-    func addFiles(_ urls: [URL]) {
-        add(urls, isFile: true)
-    }
-
-    private func add(_ urls: [URL], isFile: Bool) {
-        for url in urls {
-            guard url.startAccessingSecurityScopedResource() else { continue }
-            let path = url.standardizedFileURL.path
-            let duplicate = roots.values.contains { $0.standardizedFileURL.path == path }
-            guard !duplicate, let data = try? url.bookmarkData() else {
-                url.stopAccessingSecurityScopedResource()
-                continue
-            }
-            let name = isFile ? url.deletingPathExtension().lastPathComponent : url.lastPathComponent
-            let folder = MusicFolder(id: UUID().uuidString, name: name, bookmark: data, isFile: isFile ? true : nil)
-            folders.append(folder)
-            roots[folder.id] = url
-        }
-        saveFolders()
-        Task { await rescan() }
-    }
-
-    func removeFolder(_ folder: MusicFolder) {
-        roots[folder.id]?.stopAccessingSecurityScopedResource()
-        roots[folder.id] = nil
-        folders.removeAll { $0.id == folder.id }
-        tracks = tracks.filter { $0.folderID != folder.id }
-        saveFolders()
-        saveTracks()
-    }
-
-    func removeAllFiles() {
-        let files = folders.filter { $0.isFile == true }
-        for f in files {
-            roots[f.id]?.stopAccessingSecurityScopedResource()
-            roots[f.id] = nil
-        }
-        let ids = Set(files.map { $0.id })
-        folders.removeAll { ids.contains($0.id) }
-        tracks = tracks.filter { !ids.contains($0.folderID) }
-        saveFolders()
-        saveTracks()
-    }
-
     // Сканирование
 
-    func rescan() async {
-        guard !isScanning else { return }
-        isScanning = true
-        defer { isScanning = false }
+    /// Пересканирует папки. Если ничего не изменилось, экраны не перерисовываются.
+    func rescan(userInitiated: Bool = false) async {
+        guard !scanning else { return }
+        scanning = true
+        let showProgress = userInitiated || tracks.isEmpty
+        if showProgress { isScanning = true }
+        defer {
+            scanning = false
+            if isScanning { isScanning = false }
+        }
 
         let existing = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var sources: [(String, URL, Bool)] = []
@@ -243,15 +269,19 @@ final class LibraryStore: ObservableObject {
             if let u = roots[f.id] { sources.append((f.id, u, f.isFile == true)) }
         }
 
+        let firstLoad = tracks.isEmpty
         var all: [Track] = []
         for (id, url, isFile) in sources {
             let found = await LibraryScanner.scan(folderID: id, root: url, isFile: isFile, existing: existing)
             all.append(contentsOf: found)
-            tracks = all
+            // При самом первом сканировании показываем песни по мере нахождения.
+            if firstLoad && !found.isEmpty { tracks = all }
         }
         all.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        tracks = all
-        saveTracks()
+        if all != tracks {
+            tracks = all
+            saveTracks()
+        }
     }
 
     // Служебное
@@ -273,6 +303,8 @@ final class LibraryStore: ObservableObject {
     }
 
     private func rebuildGroups() {
+        byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        trackIDs = Set(byID.keys)
         var buckets: [String: [Track]] = [:]
         for t in tracks {
             let key: String
@@ -311,10 +343,10 @@ final class LibraryStore: ObservableObject {
     }
 
     private func saveFolders() {
-        if let data = try? JSONEncoder().encode(folders) { try? data.write(to: foldersFile) }
+        if let data = try? JSONEncoder().encode(folders) { try? data.write(to: foldersFile, options: .atomic) }
     }
 
     private func saveTracks() {
-        if let data = try? JSONEncoder().encode(tracks) { try? data.write(to: tracksFile) }
+        if let data = try? JSONEncoder().encode(tracks) { try? data.write(to: tracksFile, options: .atomic) }
     }
 }

@@ -15,6 +15,7 @@ struct MusicGlassApp: App {
             RootView()
                 .environmentObject(library)
                 .environmentObject(player)
+                .environment(\.playerControl, player)
                 .tint(.pink)
                 .onAppear { player.attach(library) }
                 .onChange(of: scenePhase) { _, phase in

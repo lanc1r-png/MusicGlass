@@ -60,7 +60,8 @@ struct NowPlayingScreen: View {
         ZStack {
             scheme == .dark ? Color.black : Color.white
             MeshArtBackground(colors: palette.map { Color(uiColor: ArtPalette.toned($0, dark: scheme == .dark)) },
-                              dark: scheme == .dark)
+                              dark: scheme == .dark,
+                              paused: !player.isPlaying)
                 .id(paletteKey + "\(scheme == .dark)")
                 .transition(.opacity)
         }
@@ -335,6 +336,8 @@ struct SystemVolumeSlider: UIViewRepresentable {
 struct MeshArtBackground: View {
     let colors: [Color]
     var dark: Bool = true
+    /// На паузе фон замирает и не тратит батарею.
+    var paused: Bool = false
 
     private var meshColors: [Color] {
         let fallback: [Color] = dark
@@ -347,7 +350,7 @@ struct MeshArtBackground: View {
 
     var body: some View {
         // Медленное, едва заметное движение, как в Apple Music.
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: paused)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             MeshGradient(width: 3, height: 3, points: points(t), colors: meshColors,
                          smoothsColors: true)

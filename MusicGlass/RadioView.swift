@@ -97,12 +97,12 @@ final class RadioListModel: ObservableObject {
 // MARK: - Карточка и сетка станций
 
 struct StationCard: View {
-    @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var status = PlaybackStatus.shared
     @ObservedObject private var lib = RadioLibrary.shared
     let station: RadioStation
 
     var body: some View {
-        let isCurrent = player.currentTrack?.id == station.playerID
+        let isCurrent = status.currentID == station.playerID
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
                 StationCover(station: station)
@@ -110,7 +110,7 @@ struct StationCard: View {
                 if isCurrent {
                     Image(systemName: "waveform")
                         .font(.system(size: 14, weight: .semibold))
-                        .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                        .symbolEffect(.variableColor.iterative, isActive: status.isPlaying)
                         .frame(width: 30, height: 30)
                         .glassEffect(.regular, in: .circle)
                         .padding(8)
@@ -143,7 +143,7 @@ struct StationCard: View {
 }
 
 struct StationGrid: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     let stations: [RadioStation]
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
@@ -152,7 +152,7 @@ struct StationGrid: View {
             ForEach(Array(stations.enumerated()), id: \.element.id) { index, s in
                 StationCard(station: s)
                     .onTapGesture {
-                        playRadio(stations, at: index, player: player)
+                        if let player { playRadio(stations, at: index, player: player) }
                     }
             }
         }

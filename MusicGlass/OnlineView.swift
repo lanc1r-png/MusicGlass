@@ -115,14 +115,14 @@ struct OnlineTrackActions: View {
 // MARK: - Строка онлайн-трека
 
 struct OnlineTrackRow: View {
-    @EnvironmentObject var player: PlayerStore
+    @ObservedObject private var status = PlaybackStatus.shared
     @ObservedObject private var lib = OnlineLibrary.shared
     let track: OnlineTrack
     @State private var showNewPlaylist = false
     @State private var newName = ""
 
     var body: some View {
-        let isCurrent = player.currentTrack?.id == track.playerID
+        let isCurrent = status.currentID == track.playerID
         HStack(spacing: 12) {
             ZStack {
                 OnlineCover(urlString: track.artworkSmall, corner: 8)
@@ -132,7 +132,7 @@ struct OnlineTrackRow: View {
                     Image(systemName: "waveform")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
-                        .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                        .symbolEffect(.variableColor.iterative, isActive: status.isPlaying)
                 }
             }
             .frame(width: 52, height: 52)
