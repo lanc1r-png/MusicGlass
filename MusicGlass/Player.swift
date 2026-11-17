@@ -12,6 +12,24 @@ final class PlayerClock: ObservableObject {
     @Published var duration: Double = 0
 }
 
+/// Читает название песни, которое радиостанция передаёт в потоке (ICY).
+final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate {
+    var onTitle: ((String) -> Void)?
+
+    func metadataOutput(_ output: AVPlayerItemMetadataOutput,
+                        didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+                        from track: AVPlayerItemTrack?) {
+        guard let item = groups.flatMap({ $0.items })
+            .first(where: { $0.identifier == .icyMetadataStreamTitle }) else { return }
+        Task { [weak self] in
+            if let s = try? await item.load(.stringValue) {
+                let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { self?.onTitle?(t) }
+            }
+        }
+    }
+}
+
 @MainActor
 final class PlayerStore: ObservableObject {
     @Published private(set) var queue: [Track] = []
@@ -20,8 +38,12 @@ final class PlayerStore: ObservableObject {
     @Published private(set) var artwork: UIImage?
     @Published private(set) var shuffleOn = false
     @Published var repeatMode: RepeatMode = .off
-    /// Текст ошибки воспроизведения (недоступный трек, нет сети).
+    /// Текст ошибки воспроизведения (недоступный трек или станция, нет сети).
     @Published var playbackError: String?
+    /// true, если сейчас играет радиостанция (прямой эфир).
+    @Published private(set) var isLive = false
+    /// Название песни из эфира радио, если станция его передаёт.
+    @Published private(set) var liveTitle: String?
 
     let clock = PlayerClock()
 
@@ -31,10 +53,40 @@ final class PlayerStore: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObserver: AnyCancellable?
+    private let metadataReader = LiveMetadataReader()
+    private var metadataOutput: AVPlayerItemMetadataOutput?
 
     var currentTrack: Track? {
         guard let i = currentIndex, queue.indices.contains(i) else { return nil }
         return queue[i]
+    }
+
+    /// Что показывать в заголовке (для радио это песня или название станции).
+    var displayTitle: String {
+        guard let t = currentTrack else { return "Не играет" }
+        if isLive, let lt = liveTitle { return parsedLive(lt).title }
+        return t.title
+    }
+
+    var displaySubtitle: String {
+        guard let t = currentTrack else { return " " }
+        if isLive {
+            if let lt = liveTitle {
+                if let artist = parsedLive(lt).artist { return artist }
+                return t.title
+            }
+            return t.artist
+        }
+        return t.artist
+    }
+
+    private func parsedLive(_ s: String) -> (title: String, artist: String?) {
+        if let r = s.range(of: " - ") {
+            let a = String(s[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let t = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !a.isEmpty && !t.isEmpty { return (t, a) }
+        }
+        return (s, nil)
     }
 
     init() {
@@ -122,7 +174,7 @@ final class PlayerStore: ObservableObject {
         if i + 1 < queue.count {
             currentIndex = i + 1
             loadCurrent(autoplay: true)
-        } else if repeatMode == .all, !queue.isEmpty {
+        } else if (repeatMode == .all || isLive), !queue.isEmpty {
             currentIndex = 0
             loadCurrent(autoplay: true)
         } else {
@@ -133,6 +185,12 @@ final class PlayerStore: ObservableObject {
 
     func previous() {
         guard let i = currentIndex else { return }
+        if isLive {
+            guard queue.count > 1 else { return }
+            currentIndex = i > 0 ? i - 1 : queue.count - 1
+            loadCurrent(autoplay: true)
+            return
+        }
         if clock.currentTime > 3 || i == 0 {
             seek(to: 0)
         } else {
@@ -142,6 +200,7 @@ final class PlayerStore: ObservableObject {
     }
 
     func seek(to seconds: Double) {
+        guard !isLive else { return }
         let t = max(0, seconds)
         player.seek(to: CMTime(seconds: t, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
@@ -157,11 +216,22 @@ final class PlayerStore: ObservableObject {
             return
         }
 
-        // Откуда играть: из сети (Audius) или из файла.
+        let isRadio = RadioID.isRadio(track)
+        let isOnline = OnlineID.isOnline(track)
+
+        // Откуда играть: радиостанция, онлайн-трек (Audius) или файл.
         let url: URL
         let localURL: URL?
-        let isOnline = OnlineID.isOnline(track)
-        if isOnline {
+        if isRadio {
+            guard let station = RadioCatalog.shared.info(for: track),
+                  let u = URL(string: station.streamURL) else {
+                pause()
+                playbackError = "Не удалось открыть станцию."
+                return
+            }
+            url = u
+            localURL = nil
+        } else if isOnline {
             guard let u = AudiusAPI.streamURL(trackID: OnlineID.audiusID(of: track)) else {
                 pause()
                 return
@@ -177,15 +247,41 @@ final class PlayerStore: ObservableObject {
         }
 
         playbackError = nil
+        isLive = isRadio
+        liveTitle = nil
+        MPRemoteCommandCenter.shared().changePlaybackPositionCommand.isEnabled = !isRadio
+
         let item = AVPlayerItem(url: url)
+
+        if isRadio {
+            let out = AVPlayerItemMetadataOutput(identifiers: nil)
+            metadataReader.onTitle = { [weak self] title in
+                Task { @MainActor in self?.setLiveTitle(title) }
+            }
+            out.setDelegate(metadataReader, queue: .main)
+            item.add(out)
+            metadataOutput = out
+        } else {
+            metadataOutput = nil
+        }
+
         player.replaceCurrentItem(with: item)
+
+        let failMessage: String
+        if isRadio {
+            failMessage = "Станция недоступна. Выберите другую."
+        } else if isOnline {
+            failMessage = "Не удалось воспроизвести трек. Проверьте интернет или выберите другой: он мог стать недоступным."
+        } else {
+            failMessage = "Не удалось открыть файл."
+        }
 
         // Ошибка загрузки (трек недоступен, нет сети)
         statusObserver = item.publisher(for: \.status)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
                 guard status == .failed else { return }
-                Task { @MainActor in self?.handleFailure(online: isOnline) }
+                Task { @MainActor in self?.handleFailure(message: failMessage) }
             }
 
         if let o = endObserver { NotificationCenter.default.removeObserver(o) }
@@ -208,6 +304,12 @@ final class PlayerStore: ObservableObject {
             let img: UIImage?
             if let localURL {
                 img = await ArtworkLoader.shared.image(for: track, url: localURL, maxSize: 900)
+            } else if isRadio {
+                if let station = RadioCatalog.shared.info(for: track) {
+                    img = await StationArt.cover(for: station, side: 900)
+                } else {
+                    img = nil
+                }
             } else {
                 img = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkLarge)
             }
@@ -218,16 +320,23 @@ final class PlayerStore: ObservableObject {
         }
     }
 
-    private func handleFailure(online: Bool) {
+    private func setLiveTitle(_ title: String) {
+        liveTitle = title
+        updateNowPlaying()
+    }
+
+    private func handleFailure(message: String) {
         player.pause()
         isPlaying = false
-        playbackError = online
-            ? "Не удалось воспроизвести трек. Проверьте интернет или выберите другой: он мог стать недоступным."
-            : "Не удалось открыть файл."
+        playbackError = message
         updateNowPlaying()
     }
 
     private func trackEnded() {
+        if isLive {
+            handleFailure(message: "Станция прервала трансляцию. Попробуйте ещё раз или выберите другую.")
+            return
+        }
         if repeatMode == .one {
             seek(to: 0)
             resume()
@@ -239,7 +348,7 @@ final class PlayerStore: ObservableObject {
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         clock.currentTime = seconds
-        if let d = player.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - clock.duration) > 1 {
+        if !isLive, let d = player.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - clock.duration) > 1 {
             clock.duration = d
         }
     }
@@ -308,14 +417,25 @@ final class PlayerStore: ObservableObject {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: t.title,
-            MPMediaItemPropertyArtist: t.artist,
-            MPMediaItemPropertyAlbumTitle: t.album,
-            MPMediaItemPropertyPlaybackDuration: clock.duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: clock.currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
-        ]
+        var info: [String: Any]
+        if isLive {
+            info = [
+                MPMediaItemPropertyTitle: displayTitle,
+                MPMediaItemPropertyArtist: displaySubtitle,
+                MPMediaItemPropertyAlbumTitle: t.title,
+                MPNowPlayingInfoPropertyIsLiveStream: true,
+                MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
+            ]
+        } else {
+            info = [
+                MPMediaItemPropertyTitle: t.title,
+                MPMediaItemPropertyArtist: t.artist,
+                MPMediaItemPropertyAlbumTitle: t.album,
+                MPMediaItemPropertyPlaybackDuration: clock.duration,
+                MPNowPlayingInfoPropertyElapsedPlaybackTime: clock.currentTime,
+                MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
+            ]
+        }
         if let art = artwork {
             info[MPMediaItemPropertyArtwork] = Self.makeArtwork(art)
         }
