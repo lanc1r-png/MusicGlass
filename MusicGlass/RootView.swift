@@ -14,6 +14,9 @@ struct RootView: View {
             Tab("Онлайн", systemImage: "cloud") {
                 OnlineView()
             }
+            Tab("Радио", systemImage: "dot.radiowaves.left.and.right") {
+                RadioView()
+            }
             Tab("Источники", systemImage: "folder") {
                 SourcesView()
             }
