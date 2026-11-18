@@ -18,9 +18,18 @@ struct MiniPlayer: View {
                 ArtworkImage(image: player.artwork, corner: 8)
                     .frame(width: 34, height: 34)
 
-                Text(player.displayTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                // Развёрнутый: название и исполнитель; свёрнутый рядом с таб-баром: только название.
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(player.displayTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if placement != .inline {
+                        Text(player.displaySubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer(minLength: 0)
             }

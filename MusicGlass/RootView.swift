@@ -3,7 +3,9 @@ import SwiftUI
 // MARK: - Корень приложения
 
 struct RootView: View {
-    @EnvironmentObject var player: PlayerStore
+    // Корень не подписан на весь плеер: таб-бар не перерисовывается от каждой мелочи.
+    @Environment(\.playerControl) private var player
+    @ObservedObject private var status = PlaybackStatus.shared
     @State private var showNowPlaying = false
 
     var body: some View {
@@ -22,8 +24,11 @@ struct RootView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .tabViewBottomAccessory {
-            MiniPlayer(player: player, showNowPlaying: $showNowPlaying)
+        // Системный слот над таб-баром; пока ничего не играет, мини-плеера нет.
+        .tabViewBottomAccessory(isEnabled: status.currentID != nil) {
+            if let player {
+                MiniPlayer(player: player, showNowPlaying: $showNowPlaying)
+            }
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingScreen()
