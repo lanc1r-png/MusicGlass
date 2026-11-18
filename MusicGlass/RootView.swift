@@ -6,6 +6,7 @@ struct RootView: View {
     // Корень не подписан на весь плеер: таб-бар не перерисовывается от каждой мелочи.
     @Environment(\.playerControl) private var player
     @State private var showNowPlaying = false
+    @Namespace private var nowPlayingNS
 
     var body: some View {
         TabView {
@@ -26,12 +27,38 @@ struct RootView: View {
         // Системный слот над таб-баром, мини-плеер виден всегда (в том числе «Не играет»).
         .tabViewBottomAccessory {
             if let player {
-                MiniPlayer(player: player, showNowPlaying: $showNowPlaying)
+                MiniPlayer(player: player, showNowPlaying: $showNowPlaying, zoomNS: nowPlayingNS)
             }
         }
         .sheet(isPresented: $showNowPlaying) {
+            // Экран плеера вырастает из мини-плеера и сжимается обратно в него.
             NowPlayingScreen()
                 .presentationDragIndicator(.visible)
+                .zoomDestination("nowPlaying", in: nowPlayingNS)
+        }
+    }
+}
+
+// MARK: - Zoom-переходы
+
+extension View {
+    /// Откуда «вырастает» экран (обложка, мини-плеер, аватар).
+    @ViewBuilder
+    func zoomSource<ID: Hashable>(_ id: ID, in ns: Namespace.ID?) -> some View {
+        if let ns {
+            matchedTransitionSource(id: id, in: ns)
+        } else {
+            self
+        }
+    }
+
+    /// Экран, который раскрывается из источника и сжимается обратно.
+    @ViewBuilder
+    func zoomDestination<ID: Hashable>(_ id: ID, in ns: Namespace.ID?) -> some View {
+        if let ns {
+            navigationTransition(.zoom(sourceID: id, in: ns))
+        } else {
+            self
         }
     }
 }

@@ -9,6 +9,7 @@ struct LocalArtistView: View {
 
     @State private var headerImage: UIImage?
     @State private var offset: CGFloat = 0
+    @Namespace private var zoomNS
 
     private let headerHeight: CGFloat = 400
 
@@ -127,8 +128,9 @@ struct LocalArtistView: View {
                     ForEach(albums) { album in
                         NavigationLink {
                             AlbumDetailView(album: album)
+                                .zoomDestination(album.id, in: zoomNS)
                         } label: {
-                            AlbumCard(album: album)
+                            AlbumCard(album: album, zoomNS: zoomNS)
                                 .frame(width: 160)
                         }
                         .buttonStyle(CardPressStyle())

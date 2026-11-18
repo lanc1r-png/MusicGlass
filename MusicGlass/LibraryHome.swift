@@ -46,6 +46,7 @@ struct LibraryView: View {
     @State private var showProfile = false
     @State private var showAllAlbums = false
     @State private var openAlbum: Album.ID?
+    @Namespace private var zoomNS
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
     private var editing: Bool { editMode.isEditing }
@@ -74,6 +75,7 @@ struct LibraryView: View {
             .navigationDestination(item: $openAlbum) { id in
                 if let album = library.albums.first(where: { $0.id == id }) {
                     AlbumDetailView(album: album)
+                        .zoomDestination(album.id, in: zoomNS)
                 }
             }
         }
@@ -83,7 +85,9 @@ struct LibraryView: View {
         .sheet(item: $editingCategory) {
             CategoryEditorView(existing: $0).presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showProfile) { ProfileView() }
+        .sheet(isPresented: $showProfile) {
+            ProfileView().zoomDestination("profile", in: zoomNS)
+        }
         .alert("Удалить категорию «\(deletingCategory?.title ?? "")»?",
                isPresented: Binding(get: { deletingCategory != nil },
                                     set: { if !$0 { deletingCategory = nil } })) {
@@ -124,6 +128,7 @@ struct LibraryView: View {
                 showProfile = true
             } label: {
                 AvatarView(name: profileName, size: 36)
+                    .zoomSource("profile", in: zoomNS)
             }
             .buttonStyle(.plain)
         }
@@ -261,7 +266,7 @@ struct LibraryView: View {
             GlassEffectContainer {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
                     ForEach(recent) { album in
-                        RecentAlbumCard(album: album) {
+                        RecentAlbumCard(album: album, zoomNS: zoomNS) {
                             openAlbum = album.id
                         }
                     }
@@ -306,6 +311,7 @@ struct RecentAlbumCard: View {
     @EnvironmentObject var library: LibraryStore
     @ObservedObject private var status = PlaybackStatus.shared
     let album: Album
+    var zoomNS: Namespace.ID? = nil
     let open: () -> Void
 
     private var isCurrent: Bool {
@@ -318,6 +324,7 @@ struct RecentAlbumCard: View {
             ZStack(alignment: .bottomTrailing) {
                 Button(action: open) {
                     ArtworkView(track: album.tracks.first, corner: 14, maxPixels: 500)
+                        .zoomSource(album.id, in: zoomNS)
                         .overlay {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)

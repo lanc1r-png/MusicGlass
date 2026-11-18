@@ -6,6 +6,7 @@ import AVKit
 struct MiniPlayer: View {
     @ObservedObject var player: PlayerStore
     @Binding var showNowPlaying: Bool
+    var zoomNS: Namespace.ID? = nil
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
     @State private var dragX: CGFloat = 0
     @State private var tint: Color?
@@ -78,6 +79,7 @@ struct MiniPlayer: View {
         }
         .contentShape(Rectangle())
         .clipped()
+        .zoomSource("nowPlaying", in: zoomNS)
         .task(id: "\(player.currentTrack?.id ?? "")|\(player.artwork != nil)") {
             guard let art = player.artwork else {
                 withAnimation(.easeOut(duration: 0.4)) { tint = nil }

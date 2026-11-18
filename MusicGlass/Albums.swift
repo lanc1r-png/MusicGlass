@@ -41,10 +41,12 @@ struct PlayShuffleButtons: View {
 struct AlbumCard: View {
     @EnvironmentObject var library: LibraryStore
     let album: Album
+    var zoomNS: Namespace.ID? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ArtworkView(track: album.tracks.first, corner: 12, maxPixels: 500)
+                .zoomSource(album.id, in: zoomNS)
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
             Text(album.title)
                 .font(.subheadline.weight(.semibold))
@@ -143,6 +145,7 @@ struct AlbumPreview: View {
 struct AlbumsView: View {
     @EnvironmentObject var library: LibraryStore
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+    @Namespace private var zoomNS
 
     var body: some View {
         ScrollView {
@@ -150,8 +153,9 @@ struct AlbumsView: View {
                 ForEach(library.albums) { album in
                     NavigationLink {
                         AlbumDetailView(album: album)
+                            .zoomDestination(album.id, in: zoomNS)
                     } label: {
-                        AlbumCard(album: album)
+                        AlbumCard(album: album, zoomNS: zoomNS)
                     }
                     .buttonStyle(.plain)
                 }
