@@ -693,8 +693,9 @@ struct ProfileView: View {
                         .textInputAutocapitalization(.words)
                 }
                 Section("Фото") {
+                    let hasPhoto = avatar.image != nil
                     PhotosPicker(selection: $pickerItem, matching: .images) {
-                        Label(avatar.image == nil ? "Выбрать фото" : "Изменить фото",
+                        Label(hasPhoto ? "Изменить фото" : "Выбрать фото",
                               systemImage: "photo.on.rectangle")
                     }
                     if avatar.image != nil {

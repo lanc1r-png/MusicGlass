@@ -425,7 +425,7 @@ final class PlayerStore: ObservableObject {
 
         if let o = endObserver { NotificationCenter.default.removeObserver(o) }
         endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.trackEnded() }
         }
