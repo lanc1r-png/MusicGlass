@@ -24,15 +24,29 @@ struct RootView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        // Системный слот над таб-баром; пока ничего не играет, мини-плеера нет.
-        .tabViewBottomAccessory(isEnabled: status.currentID != nil) {
+        // Системный слот над таб-баром; пока ничего не играет, мини-плеера нет (iOS 26.1+).
+        .modifier(MiniPlayerAccessory(enabled: status.currentID != nil) {
             if let player {
                 MiniPlayer(player: player, showNowPlaying: $showNowPlaying)
             }
-        }
+        })
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingScreen()
                 .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+/// Мини-плеер в слоте над таб-баром. На iOS 26.0 слот виден всегда, с 26.1 прячется без трека.
+struct MiniPlayerAccessory<Accessory: View>: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder let accessory: () -> Accessory
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.1, *) {
+            content.tabViewBottomAccessory(isEnabled: enabled) { accessory() }
+        } else {
+            content.tabViewBottomAccessory { accessory() }
         }
     }
 }
