@@ -15,6 +15,7 @@ struct NowPlayingScreen: View {
     @State private var panel: NowPanel = .none
     @Namespace private var artNS
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var fg: Color { scheme == .dark ? .white : .black }
 
@@ -88,7 +89,7 @@ struct NowPlayingScreen: View {
             scheme == .dark ? Color.black : Color.white
             MeshArtBackground(colors: palette.map { Color(uiColor: ArtPalette.toned($0, dark: scheme == .dark)) },
                               dark: scheme == .dark,
-                              paused: !player.isPlaying)
+                              paused: !player.isPlaying || reduceMotion)
                 .id(paletteKey + "\(scheme == .dark)")
                 .transition(.opacity)
         }
@@ -136,8 +137,17 @@ struct NowPlayingScreen: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            favoriteButton
-            moreMenu
+            glassButtons
+        }
+    }
+
+    /// Сердечко и «⋯» в одном стеклянном контейнере.
+    private var glassButtons: some View {
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                favoriteButton
+                moreMenu
+            }
         }
     }
 
@@ -155,8 +165,7 @@ struct NowPlayingScreen: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            favoriteButton
-            moreMenu
+            glassButtons
         }
     }
 
@@ -402,6 +411,7 @@ struct ElasticBar: View {
     @State private var startValue: Double = 0
     @State private var overflow: CGFloat = 0
     @State private var last: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let haptic = UIImpactFeedbackGenerator(style: .light)
 
     var body: some View {
@@ -426,19 +436,22 @@ struct ElasticBar: View {
                             startValue = v
                             last = v
                             haptic.prepare()
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.62)) { active = true }
+                            withAnimation(reduceMotion ? .easeOut(duration: 0.15)
+                                                       : .spring(response: 0.3, dampingFraction: 0.62)) { active = true }
                         }
                         let raw = startValue + Double(g.translation.width / w)
                         let clamped = min(max(raw, 0), 1)
                         let over = CGFloat(raw - clamped) * w
-                        overflow = (over >= 0 ? 1 : -1) * pow(abs(over), 0.7)
+                        // При «Уменьшить движение» полоса не пружинит за краями.
+                        overflow = reduceMotion ? 0 : (over >= 0 ? 1 : -1) * pow(abs(over), 0.7)
                         if (clamped == 0 || clamped == 1) && last != clamped { haptic.impactOccurred() }
                         last = clamped
                         onChange(clamped)
                     }
                     .onEnded { _ in
                         let final = last
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) {
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                                   : .spring(response: 0.45, dampingFraction: 0.55)) {
                             active = false
                             overflow = 0
                         }

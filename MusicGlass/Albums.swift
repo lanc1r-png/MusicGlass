@@ -17,6 +17,8 @@ struct PlayShuffleButtons: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
+            // Главное действие залито акцентом, второе — прозрачное стекло, как в Apple Music.
+            .buttonStyle(.glassProminent)
             Button {
                 Haptics.tap()
                 player?.playShuffled(tracks)
@@ -25,8 +27,8 @@ struct PlayShuffleButtons: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.glass)
         }
-        .buttonStyle(.glass)
         .controlSize(.large)
         .tint(.pink)
         .listRowSeparator(.hidden)

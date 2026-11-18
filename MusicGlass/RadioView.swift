@@ -111,8 +111,10 @@ struct StationCard: View {
                     Image(systemName: "waveform")
                         .font(.system(size: 14, weight: .semibold))
                         .symbolEffect(.variableColor.iterative, isActive: status.isPlaying)
+                        .foregroundStyle(.white)
                         .frame(width: 30, height: 30)
-                        .glassEffect(.regular, in: .circle)
+                        // Стекло только для кнопок и навигации, здесь обычный тёмный кружок.
+                        .background(Circle().fill(Color.black.opacity(0.45)))
                         .padding(8)
                 }
             }
@@ -277,6 +279,7 @@ struct RadioView: View {
 
     private var countryRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
                 ForEach(RadioShowcase.countries) { c in
                     NavigationLink {
@@ -290,6 +293,7 @@ struct RadioView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
             }
         }
     }

@@ -174,6 +174,7 @@ struct LyricsPanel: View {
     @State private var lyrics: Lyrics?
     @State private var loading = true
     @State private var userScrolling = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var currentLine: Int? {
         guard let l = lyrics, l.synced else { return nil }
@@ -243,7 +244,7 @@ struct LyricsPanel: View {
             }
             .onChange(of: current) { _, new in
                 guard let new, !userScrolling else { return }
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
+                withAnimation(reduceMotion ? .easeInOut(duration: 0.3) : .spring(response: 0.6, dampingFraction: 0.85)) {
                     proxy.scrollTo(l.lines[new].id, anchor: UnitPoint(x: 0, y: 0.3))
                 }
             }
@@ -261,8 +262,8 @@ struct LyricsPanel: View {
         Text(text)
             .font(.system(size: synced ? 28 : 22, weight: .bold))
             .foregroundStyle(fg.opacity(!synced ? 0.85 : (isCurrent ? 1 : 0.32)))
-            .blur(radius: synced && !isCurrent && !userScrolling ? min(Double(distance) * 0.6, 2.4) : 0)
-            .scaleEffect(isCurrent ? 1.0 : 0.97, anchor: .leading)
+            .blur(radius: synced && !isCurrent && !userScrolling && !reduceMotion ? min(Double(distance) * 0.6, 2.4) : 0)
+            .scaleEffect(isCurrent || reduceMotion ? 1.0 : 0.97, anchor: .leading)
             .animation(.spring(response: 0.45, dampingFraction: 0.8), value: isCurrent)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())

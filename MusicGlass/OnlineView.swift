@@ -53,6 +53,8 @@ struct OnlinePlayButtons: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
+            // Главное действие залито акцентом, второе — прозрачное стекло, как в Apple Music.
+            .buttonStyle(.glassProminent)
             Button {
                 OnlineCatalog.shared.register(tracks)
                 player.playShuffled(tracks.map { $0.asTrack })
@@ -61,8 +63,8 @@ struct OnlinePlayButtons: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.glass)
         }
-        .buttonStyle(.glass)
         .controlSize(.large)
         .tint(.pink)
         .listRowSeparator(.hidden)

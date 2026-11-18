@@ -77,8 +77,12 @@ struct LibraryView: View {
                 }
             }
         }
-        .sheet(isPresented: $showNewCategory) { CategoryEditorView(existing: nil) }
-        .sheet(item: $editingCategory) { CategoryEditorView(existing: $0) }
+        .sheet(isPresented: $showNewCategory) {
+            CategoryEditorView(existing: nil).presentationDetents([.medium, .large])
+        }
+        .sheet(item: $editingCategory) {
+            CategoryEditorView(existing: $0).presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $showProfile) { ProfileView() }
         .alert("Удалить категорию «\(deletingCategory?.title ?? "")»?",
                isPresented: Binding(get: { deletingCategory != nil },
