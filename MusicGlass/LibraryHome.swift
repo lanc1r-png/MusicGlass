@@ -17,6 +17,8 @@ struct LibraryCategoryLabel: View {
             Text(item.title)
                 .font(.title3)
                 .lineLimit(1)
+                // Тонкий разделитель начинается от текста, а не от иконки.
+                .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] }
             Spacer(minLength: 8)
             if let detail {
                 Text(detail)
@@ -158,6 +160,10 @@ struct LibraryView: View {
             }
         }
         .listStyle(.plain)
+        // Края мягко растворяются под шапкой и таб-баром.
+        .scrollEdgeEffectStyle(.soft, for: .all)
+        // Запас снизу, чтобы последние обложки не уходили под мини-плеер и таб-бар.
+        .contentMargins(.bottom, 32, for: .scrollContent)
         .environment(\.editMode, $editMode)
         .animation(.snappy, value: editing)
     }
@@ -247,10 +253,13 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
 
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
-                ForEach(recent) { album in
-                    RecentAlbumCard(album: album) {
-                        openAlbum = album.id
+            // Стеклянные кнопки play рисуются одним проходом.
+            GlassEffectContainer {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
+                    ForEach(recent) { album in
+                        RecentAlbumCard(album: album) {
+                            openAlbum = album.id
+                        }
                     }
                 }
             }
@@ -399,6 +408,8 @@ struct CustomCategoryView: View {
                     }
                 }
                 .listStyle(.plain)
+                .scrollEdgeEffectStyle(.soft, for: .all)
+                .contentMargins(.bottom, 24, for: .scrollContent)
             }
         }
         .navigationTitle(category?.title ?? "")

@@ -124,6 +124,8 @@ struct SongsView: View {
                     }
                 }
                 .listStyle(.plain)
+                .scrollEdgeEffectStyle(.soft, for: .all)
+                .contentMargins(.bottom, 24, for: .scrollContent)
             }
         }
         .navigationTitle(title)
@@ -184,6 +186,8 @@ struct IndexedSongsList: View {
                 }
             }
             .listStyle(.plain)
+            .scrollEdgeEffectStyle(.soft, for: .all)
+            .contentMargins(.bottom, 24, for: .scrollContent)
             .contentMargins(.trailing, letters.count > 1 ? 22 : 0, for: .scrollContent)
             .overlay(alignment: .trailing) {
                 if letters.count > 1 {
@@ -279,6 +283,8 @@ struct ArtistsView: View {
             }
         }
         .listStyle(.plain)
+        .scrollEdgeEffectStyle(.soft, for: .all)
+        .contentMargins(.bottom, 24, for: .scrollContent)
         .navigationTitle("Исполнители")
         .navigationBarTitleDisplayMode(.large)
     }
@@ -325,6 +331,9 @@ struct SearchView: View {
                             }
                         }
                         .listStyle(.plain)
+                        .scrollEdgeEffectStyle(.soft, for: .all)
+                .scrollEdgeEffectStyle(.soft, for: .all)
+                .contentMargins(.bottom, 24, for: .scrollContent)
                     }
                 }
             }

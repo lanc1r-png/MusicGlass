@@ -10,6 +10,13 @@ struct MiniPlayer: View {
     @State private var dragX: CGFloat = 0
     @State private var tint: Color?
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// Насколько ярок оттенок обложки; при «Уменьшить прозрачность» приглушаем ради читаемости.
+    private var tintStrength: (start: Double, end: Double) {
+        if reduceTransparency { return (0.16, 0.05) }
+        return scheme == .dark ? (0.55, 0.2) : (0.4, 0.12)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -62,8 +69,8 @@ struct MiniPlayer: View {
         // Лёгкий оттенок обложки под стеклом.
         .background {
             if let tint {
-                LinearGradient(colors: [tint.opacity(scheme == .dark ? 0.55 : 0.4),
-                                        tint.opacity(scheme == .dark ? 0.2 : 0.12)],
+                LinearGradient(colors: [tint.opacity(tintStrength.start),
+                                        tint.opacity(tintStrength.end)],
                                startPoint: .leading, endPoint: .trailing)
                     .clipShape(Capsule())
                     .transition(.opacity)
