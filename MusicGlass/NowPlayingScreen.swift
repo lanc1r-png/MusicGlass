@@ -14,6 +14,7 @@ struct NowPlayingScreen: View {
     @State private var showEditor = false
     @State private var panel: NowPanel = .none
     @Namespace private var artNS
+    @Namespace private var glassNS
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -252,19 +253,22 @@ struct NowPlayingScreen: View {
 
     /// Как в Apple Music: текст — AirPlay — очередь.
     private var bottomRow: some View {
-        HStack {
-            Spacer()
-            toggleButton(panel == .lyrics ? "quote.bubble.fill" : "quote.bubble",
-                         on: panel == .lyrics) { setPanel(.lyrics) }
-            Spacer()
-            AirPlayButton().frame(width: 44, height: 44)
-            Spacer()
-            toggleButton("list.bullet", on: panel == .queue) { setPanel(.queue) }
-            Spacer()
+        GlassEffectContainer(spacing: 24) {
+            HStack {
+                Spacer()
+                toggleButton(panel == .lyrics ? "quote.bubble.fill" : "quote.bubble",
+                             id: "lyrics", on: panel == .lyrics) { setPanel(.lyrics) }
+                Spacer()
+                AirPlayButton().frame(width: 44, height: 44)
+                Spacer()
+                toggleButton("list.bullet", id: "queue", on: panel == .queue) { setPanel(.queue) }
+                Spacer()
+            }
         }
     }
 
-    private func toggleButton(_ name: String, on: Bool,
+    /// Включённая кнопка «вытекает» стеклянным кругом, выключенная растворяется.
+    private func toggleButton(_ name: String, id: String, on: Bool,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
@@ -272,9 +276,10 @@ struct NowPlayingScreen: View {
                 .foregroundStyle(on ? fg : fg.opacity(0.55))
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 44, height: 44)
-                .background(Circle().fill(fg.opacity(on ? 0.2 : 0)))
         }
         .buttonStyle(PressScaleStyle())
+        .glassEffect(on ? .regular.interactive() : .identity, in: .circle)
+        .glassEffectID(id, in: glassNS)
     }
 }
 
@@ -294,11 +299,15 @@ struct QueuePanel: View {
                     .font(.title3.weight(.bold))
                 Spacer()
                 if !player.isLive {
-                    pill(player.shuffleOn ? "shuffle" : "shuffle", on: player.shuffleOn) {
-                        player.toggleShuffle()
-                    }
-                    pill(player.repeatMode == .one ? "repeat.1" : "repeat", on: player.repeatMode != .off) {
-                        player.cycleRepeat()
+                    GlassEffectContainer(spacing: 8) {
+                        HStack(spacing: 8) {
+                            pill("shuffle", on: player.shuffleOn) {
+                                player.toggleShuffle()
+                            }
+                            pill(player.repeatMode == .one ? "repeat.1" : "repeat", on: player.repeatMode != .off) {
+                                player.cycleRepeat()
+                            }
+                        }
                     }
                 }
             }
@@ -353,19 +362,20 @@ struct QueuePanel: View {
         }
     }
 
+    /// Стеклянная капсула: при включении заливается акцентом.
     private func pill(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
         Button {
             Haptics.tap()
-            action()
+            withAnimation(.snappy) { action() }
         } label: {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(on ? (fg == .white ? Color.black : Color.white) : fg)
+                .foregroundStyle(on ? Color.white : fg)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 46, height: 30)
-                .background(Capsule().fill(on ? fg.opacity(0.9) : fg.opacity(0.12)))
         }
-        .buttonStyle(PressScaleStyle())
+        .buttonStyle(.plain)
+        .glassEffect(on ? .regular.tint(.pink).interactive() : .regular.interactive(), in: .capsule)
     }
 }
 

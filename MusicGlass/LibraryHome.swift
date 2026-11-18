@@ -106,20 +106,27 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // В режиме правки капсула из двух кнопок перетекает в одну «Готово».
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                showNewCategory = true
-            } label: {
-                Image(systemName: "text.badge.plus")
-            }
-            Button {
-                Haptics.tap()
-                withAnimation(.snappy) {
-                    editMode = editing ? .inactive : .active
+            if editing {
+                Button {
+                    toggleEditing()
+                } label: {
+                    Image(systemName: "checkmark")
                 }
-            } label: {
-                Image(systemName: editing ? "checkmark" : "checklist")
-                    .foregroundStyle(editing ? Color.pink : Color.primary)
+                .buttonStyle(.glassProminent)
+                .tint(.pink)
+            } else {
+                Button {
+                    showNewCategory = true
+                } label: {
+                    Image(systemName: "text.badge.plus")
+                }
+                Button {
+                    toggleEditing()
+                } label: {
+                    Image(systemName: "checklist")
+                }
             }
         }
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
@@ -133,6 +140,13 @@ struct LibraryView: View {
             .buttonStyle(.plain)
         }
         .sharedBackgroundVisibility(.hidden)
+    }
+
+    private func toggleEditing() {
+        Haptics.tap()
+        withAnimation(.snappy) {
+            editMode = editing ? .inactive : .active
+        }
     }
 
     // MARK: Содержимое
