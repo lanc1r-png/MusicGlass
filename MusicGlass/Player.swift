@@ -32,6 +32,28 @@ extension EnvironmentValues {
     @Entry var playerControl: PlayerStore? = nil
 }
 
+/// Окно ошибки воспроизведения. Подписано на плеер только оно само,
+/// поэтому большие экраны (радио, онлайн) не перерисовываются от каждой мелочи.
+struct PlaybackErrorAlert: ViewModifier {
+    @EnvironmentObject var player: PlayerStore
+
+    func body(content: Content) -> some View {
+        content.alert("Не удалось воспроизвести",
+                      isPresented: Binding(
+                        get: { player.playbackError != nil },
+                        set: { if !$0 { player.playbackError = nil } }
+                      )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(player.playbackError ?? "")
+        }
+    }
+}
+
+extension View {
+    func playbackErrorAlert() -> some View { modifier(PlaybackErrorAlert()) }
+}
+
 /// Настройка плавного перехода между треками (0 = выключен, треки идут без паузы).
 enum PlaybackSettings {
     static let crossfadeKey = "crossfadeSeconds"

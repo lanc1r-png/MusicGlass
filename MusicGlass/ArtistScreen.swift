@@ -33,7 +33,9 @@ struct LocalArtistView: View {
         }
         .ignoresSafeArea(edges: .top)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y + geo.contentInsets.top
+            // Нужны только первые ~450 точек прокрутки: дальше шапки не видно,
+            // и экран не перерисовывается на каждом кадре.
+            min(max(geo.contentOffset.y + geo.contentInsets.top, -300), 450).rounded()
         } action: { _, value in
             offset = value
         }

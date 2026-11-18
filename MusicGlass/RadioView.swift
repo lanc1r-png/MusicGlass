@@ -164,7 +164,7 @@ struct StationGrid: View {
 // MARK: - Вкладка «Радио»
 
 struct RadioView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @ObservedObject private var lib = RadioLibrary.shared
     @StateObject private var popular = RadioListModel()
     @StateObject private var found = RadioListModel()
@@ -198,15 +198,7 @@ struct RadioView: View {
                 if popular.stations.isEmpty { popular.load() }
             }
         }
-        .alert("Не удалось воспроизвести",
-               isPresented: Binding(
-                get: { player.playbackError != nil },
-                set: { if !$0 { player.playbackError = nil } }
-               )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(player.playbackError ?? "")
-        }
+        .playbackErrorAlert()
     }
 
     // Главная витрина
@@ -245,7 +237,7 @@ struct RadioView: View {
                     StationCard(station: s)
                         .frame(width: 150)
                         .onTapGesture {
-                            playRadio(lib.favorites, at: index, player: player)
+                            if let player { playRadio(lib.favorites, at: index, player: player) }
                         }
                 }
             }

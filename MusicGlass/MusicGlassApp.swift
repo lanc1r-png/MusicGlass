@@ -8,6 +8,9 @@ struct MusicGlassApp: App {
 
     init() {
         Self.prepareDocuments()
+        Task.detached(priority: .background) {
+            ArtworkLoader.shared.pruneDiskCache()
+        }
     }
 
     var body: some Scene {

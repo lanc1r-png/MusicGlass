@@ -335,17 +335,18 @@ struct RecentAlbumCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Внутри строки списка обычные кнопки «перехватывают» нажатия друг у друга,
+            // поэтому обложка и подпись открываются касанием, а play — отдельная кнопка без рамки.
             ZStack(alignment: .bottomTrailing) {
-                Button(action: open) {
-                    ArtworkView(track: album.tracks.first, corner: 14, maxPixels: 500)
-                        .zoomSource(album.id, in: zoomNS)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-                        }
-                        .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
-                }
-                .buttonStyle(CardPressStyle())
+                ArtworkView(track: album.tracks.first, corner: 14, maxPixels: 500)
+                    .zoomSource(album.id, in: zoomNS)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .onTapGesture(perform: open)
 
                 Button {
                     Haptics.tap()
@@ -361,27 +362,26 @@ struct RecentAlbumCard: View {
                         .foregroundStyle(.white)
                         .contentTransition(.symbolEffect(.replace))
                         .frame(width: 36, height: 36)
-                        .glassEffect(.regular.tint(.black.opacity(0.25)).interactive(), in: .circle)
+                        .glassEffect(.regular.tint(.black.opacity(0.25)), in: .circle)
+                        .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .padding(10)
             }
 
-            Button(action: open) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(album.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isCurrent ? Color.pink : Color.primary)
-                        .lineLimit(1)
-                    Text(album.artist)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(album.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isCurrent ? Color.pink : Color.primary)
+                    .lineLimit(1)
+                Text(album.artist)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
         }
         .contextMenu {
             AlbumMenuItems(tracks: album.tracks)

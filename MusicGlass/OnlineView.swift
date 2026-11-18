@@ -40,12 +40,13 @@ struct OnlineCover: View {
 // MARK: - Кнопки «Играть» и «Вперемешку»
 
 struct OnlinePlayButtons: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     let tracks: [OnlineTrack]
 
     var body: some View {
         HStack(spacing: 12) {
             Button {
+                guard let player else { return }
                 if player.shuffleOn { player.toggleShuffle() }
                 playOnline(tracks, at: 0, player: player)
             } label: {
@@ -57,7 +58,7 @@ struct OnlinePlayButtons: View {
             .buttonStyle(.glassProminent)
             Button {
                 OnlineCatalog.shared.register(tracks)
-                player.playShuffled(tracks.map { $0.asTrack })
+                player?.playShuffled(tracks.map { $0.asTrack })
             } label: {
                 Label("Вперемешку", systemImage: "shuffle")
                     .font(.headline)
@@ -273,7 +274,7 @@ private struct OnlineCategoryRow: View {
 }
 
 struct OnlineView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @ObservedObject private var lib = OnlineLibrary.shared
     @StateObject private var model = OnlineModel()
     @State private var query = ""
@@ -373,15 +374,7 @@ struct OnlineView: View {
             .onChange(of: query) { _, new in model.search(new) }
             .task { await model.loadTrending() }
             .overlay { searchOverlay }
-            .alert("Не удалось воспроизвести",
-                   isPresented: Binding(
-                    get: { player.playbackError != nil },
-                    set: { if !$0 { player.playbackError = nil } }
-                   )) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(player.playbackError ?? "")
-            }
+            .playbackErrorAlert()
         }
     }
 
@@ -390,7 +383,7 @@ struct OnlineView: View {
         ForEach(Array(list.enumerated()), id: \.element.id) { index, track in
             OnlineTrackRow(track: track)
                 .onTapGesture {
-                    playOnline(list, at: index, player: player)
+                    if let player { playOnline(list, at: index, player: player) }
                 }
         }
     }
@@ -433,7 +426,7 @@ struct OnlineView: View {
 // MARK: - Страница исполнителя
 
 struct ArtistDetailView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     let artist: OnlineArtist
     @State private var tracks: [OnlineTrack] = []
     @State private var isLoading = true
@@ -465,7 +458,7 @@ struct ArtistDetailView: View {
                 ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                     OnlineTrackRow(track: track)
                         .onTapGesture {
-                            playOnline(tracks, at: index, player: player)
+                            if let player { playOnline(tracks, at: index, player: player) }
                         }
                 }
             }

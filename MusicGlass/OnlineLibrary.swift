@@ -135,7 +135,7 @@ struct OnlineFavoriteButton: View {
 // MARK: - Избранное (онлайн)
 
 struct OnlineFavoritesView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @ObservedObject private var lib = OnlineLibrary.shared
 
     var body: some View {
@@ -146,7 +146,7 @@ struct OnlineFavoritesView: View {
                 ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                     OnlineTrackRow(track: track)
                         .onTapGesture {
-                            playOnline(tracks, at: index, player: player)
+                            if let player { playOnline(tracks, at: index, player: player) }
                         }
                 }
                 .onDelete { lib.removeFavorites(at: $0) }
@@ -224,7 +224,7 @@ struct OnlinePlaylistsView: View {
 }
 
 struct OnlinePlaylistDetailView: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
     @ObservedObject private var lib = OnlineLibrary.shared
     let playlistID: String
     @State private var showRename = false
@@ -243,7 +243,7 @@ struct OnlinePlaylistDetailView: View {
             ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                 OnlineTrackRow(track: track)
                     .onTapGesture {
-                        playOnline(tracks, at: index, player: player)
+                        if let player { playOnline(tracks, at: index, player: player) }
                     }
             }
             .onDelete { lib.removeTracks(at: $0, from: playlistID) }

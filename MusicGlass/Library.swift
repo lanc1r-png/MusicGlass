@@ -143,6 +143,22 @@ final class ArtworkLoader: @unchecked Sendable {
         cache.removeAllObjects()
     }
 
+    /// Удаляет из кэша файлы, которые не обновлялись больше 60 дней (обложки, логотипы радио, тексты, списки станций).
+    /// Нужные снова появятся при первом показе.
+    func pruneDiskCache(olderThanDays days: Double = 60) {
+        let fm = FileManager.default
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let limit = Date().addingTimeInterval(-days * 86400)
+        for name in ["Artwork", "RadioCovers", "Lyrics", "RadioLists"] {
+            let dir = caches.appendingPathComponent(name, isDirectory: true)
+            guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+            for f in files {
+                let date = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if date < limit { try? fm.removeItem(at: f) }
+            }
+        }
+    }
+
     func image(for track: Track, url: URL, maxSize: CGFloat) async -> UIImage? {
         // Дата изменения файла входит в ключ: после правки тегов обложка обновится сама.
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
