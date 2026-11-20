@@ -402,16 +402,8 @@ struct RadioFavoriteButton: View {
     var body: some View {
         let station = RadioCatalog.shared.info(for: track)
         let isFav = station.map { lib.isFavorite($0.id) } ?? false
-        Button {
+        GlassHeartButton(isOn: isFav) {
             if let station { lib.toggle(station) }
-        } label: {
-            Image(systemName: isFav ? "heart.fill" : "heart")
-                .contentTransition(.symbolEffect(.replace))
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(isFav ? Color.pink : Color.primary)
-                .frame(width: 40, height: 40)
-                .glassEffect(.regular.interactive(), in: .circle)
         }
-        .buttonStyle(.plain)
     }
 }

@@ -118,17 +118,9 @@ struct OnlineFavoriteButton: View {
     var body: some View {
         let info = OnlineCatalog.shared.info(for: track)
         let isFav = info.map { lib.isFavorite($0.id) } ?? false
-        Button {
+        GlassHeartButton(isOn: isFav) {
             if let info { lib.toggleFavorite(info) }
-        } label: {
-            Image(systemName: isFav ? "heart.fill" : "heart")
-                .contentTransition(.symbolEffect(.replace))
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(isFav ? Color.pink : Color.primary)
-                .frame(width: 40, height: 40)
-                .glassEffect(.regular.interactive(), in: .circle)
         }
-        .buttonStyle(.plain)
     }
 }
 

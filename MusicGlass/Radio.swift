@@ -339,9 +339,7 @@ enum RadioCache {
     }
 
     private static func file(for key: String) -> URL {
-        var h = 5381
-        for u in key.unicodeScalars { h = (h &* 33 &+ Int(u.value)) & 0x7fffffff }
-        return dir.appendingPathComponent("\(h).json")
+        dir.appendingPathComponent(stableFileHash(key) + ".json")
     }
 
     static func get(_ key: String) -> (stations: [RadioStation], fresh: Bool)? {

@@ -40,36 +40,12 @@ struct OnlineCover: View {
 // MARK: - Кнопки «Играть» и «Вперемешку»
 
 struct OnlinePlayButtons: View {
-    @Environment(\.playerControl) private var player
     let tracks: [OnlineTrack]
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                guard let player else { return }
-                if player.shuffleOn { player.toggleShuffle() }
-                playOnline(tracks, at: 0, player: player)
-            } label: {
-                Label("Играть", systemImage: "play.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-            }
-            // Главное действие залито акцентом, второе — прозрачное стекло, как в Apple Music.
-            .buttonStyle(.glassProminent)
-            Button {
-                OnlineCatalog.shared.register(tracks)
-                player?.playShuffled(tracks.map { $0.asTrack })
-            } label: {
-                Label("Вперемешку", systemImage: "shuffle")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.glass)
-        }
-        .controlSize(.large)
-        .tint(.pink)
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
+        // Те же кнопки, что в медиатеке; онлайн-треки заранее регистрируются для плеера.
+        PlayShuffleButtons(tracks: tracks.map { $0.asTrack })
+            .onAppear { OnlineCatalog.shared.register(tracks) }
     }
 }
 

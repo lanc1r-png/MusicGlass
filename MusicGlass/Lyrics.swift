@@ -46,7 +46,7 @@ enum LyricsService {
     static func lyrics(for track: Track, localURL: URL?) async -> Lyrics? {
         let key = track.id as NSString
         if let hit = memory.object(forKey: key) { return hit.value }
-        let file = dir.appendingPathComponent(hash(track.id) + ".json")
+        let file = dir.appendingPathComponent(stableFileHash(track.id) + ".json")
         if let data = try? Data(contentsOf: file),
            let e = try? JSONDecoder().decode(DiskEntry.self, from: data),
            e.lyrics != nil || Date().timeIntervalSince(e.date) < 86400 {
@@ -151,15 +151,6 @@ enum LyricsService {
         out.sort { $0.0 < $1.0 }
         let lines = out.enumerated().map { LyricLine(id: $0.offset, time: $0.element.0, text: $0.element.1) }
         return Lyrics(lines: lines, synced: true)
-    }
-
-    private static func hash(_ s: String) -> String {
-        var h: UInt64 = 1469598103934665603
-        for b in s.utf8 {
-            h ^= UInt64(b)
-            h = h &* 1099511628211
-        }
-        return String(h, radix: 36)
     }
 }
 

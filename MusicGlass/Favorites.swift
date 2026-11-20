@@ -36,23 +36,31 @@ final class FavoritesStore: ObservableObject {
     }
 }
 
-/// Кнопка-сердечко из стекла (для экрана «Сейчас играет»).
+/// Общая стеклянная кнопка-сердечко (медиатека, онлайн, радио).
+struct GlassHeartButton: View {
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isOn ? "heart.fill" : "heart")
+                .contentTransition(.symbolEffect(.replace))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(isOn ? Color.pink : Color.primary)
+                .frame(width: 40, height: 40)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Сердечко для локального трека на экране «Сейчас играет».
 struct FavoriteButton: View {
     @ObservedObject private var favorites = FavoritesStore.shared
     let track: Track
 
     var body: some View {
-        Button {
-            favorites.toggle(track)
-        } label: {
-            Image(systemName: favorites.contains(track) ? "heart.fill" : "heart")
-                .contentTransition(.symbolEffect(.replace))
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(favorites.contains(track) ? Color.pink : Color.primary)
-                .frame(width: 40, height: 40)
-                .glassEffect(.regular.interactive(), in: .circle)
-        }
-        .buttonStyle(.plain)
+        GlassHeartButton(isOn: favorites.contains(track)) { favorites.toggle(track) }
     }
 }
 

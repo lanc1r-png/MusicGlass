@@ -153,23 +153,30 @@ struct IndexedSongsList: View {
     private let letters: [String]
     private let firstID: [String: String]
 
+    /// Последний посчитанный алфавит: при повторном открытии «Песен» сортировка не повторяется.
+    @MainActor private static var memo: (input: [Track], ordered: [Track], letters: [String], firstID: [String: String])?
+
     init(tracks: [Track]) {
-        let sorted = tracks.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        let named = sorted.filter { AlphabetIndexing.letter(for: $0.title) != "#" }
-        let other = sorted.filter { AlphabetIndexing.letter(for: $0.title) == "#" }
-        let all = named + other
+        if let m = Self.memo, m.input == tracks {
+            ordered = m.ordered
+            letters = m.letters
+            firstID = m.firstID
+            return
+        }
+        // Буква для каждой песни считается один раз.
+        let keyed = tracks.map { (AlphabetIndexing.letter(for: $0.title), $0) }
+            .sorted { $0.1.title.localizedStandardCompare($1.1.title) == .orderedAscending }
+        let all = keyed.filter { $0.0 != "#" } + keyed.filter { $0.0 == "#" }
         var letters: [String] = []
         var first: [String: String] = [:]
-        for t in all {
-            let l = AlphabetIndexing.letter(for: t.title)
-            if first[l] == nil {
-                first[l] = t.id
-                letters.append(l)
-            }
+        for (l, t) in all where first[l] == nil {
+            first[l] = t.id
+            letters.append(l)
         }
-        ordered = all
+        ordered = all.map { $0.1 }
         self.letters = letters
         firstID = first
+        Self.memo = (tracks, ordered, letters, first)
     }
 
     var body: some View {
@@ -296,9 +303,11 @@ struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(\.playerControl) private var player
     @State private var query = ""
+    /// Запрос с небольшой задержкой: фильтр не пересчитывается на каждую букву.
+    @State private var debounced = ""
 
     private var results: [Track] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = debounced.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return [] }
         let found = library.tracks.filter {
             $0.title.localizedCaseInsensitiveContains(q)
@@ -318,7 +327,12 @@ struct SearchView: View {
                 } else {
                     let list = results
                     if list.isEmpty {
-                        ContentUnavailableView.search(text: query)
+                        // Пока запрос ещё «доезжает», не показываем «ничего не найдено».
+                        if debounced == query {
+                            ContentUnavailableView.search(text: query)
+                        } else {
+                            Color.clear
+                        }
                     } else {
                         List {
                             ForEach(Array(list.enumerated()), id: \.element.id) { index, track in
@@ -339,6 +353,14 @@ struct SearchView: View {
             }
             .navigationTitle("Поиск")
             .searchable(text: $query, prompt: "Песни, альбомы, исполнители")
+            .task(id: query) {
+                if query.isEmpty {
+                    debounced = ""
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if !Task.isCancelled { debounced = query }
+            }
         }
     }
 }

@@ -14,12 +14,14 @@ struct Track: Identifiable, Codable, Hashable {
     var duration: Double
 }
 
-struct MusicFolder: Identifiable, Codable, Hashable {
-    let id: String
-    var name: String
-    var bookmark: Data
-    /// true, если источник — отдельный файл, а не папка
-    var isFile: Bool? = nil
+/// Короткий стабильный хэш строки для имён файлов кэша (FNV-1a).
+func stableFileHash(_ s: String) -> String {
+    var h: UInt64 = 1469598103934665603
+    for b in s.utf8 {
+        h ^= UInt64(b)
+        h = h &* 1099511628211
+    }
+    return String(h, radix: 36)
 }
 
 struct Album: Identifiable, Hashable {
@@ -55,13 +57,7 @@ enum LibraryScanner {
         return result
     }
 
-    static func scan(folderID: String, root: URL, isFile: Bool, existing: [String: Track]) async -> [Track] {
-        if isFile {
-            let id = folderID + "/"
-            if let old = existing[id] { return [old] }
-            return [await readTrack(id: id, folderID: folderID, rel: "", file: root)]
-        }
-
+    static func scan(folderID: String, root: URL, existing: [String: Track]) async -> [Track] {
         let files = listFiles(in: root)
         let rootPath = root.standardizedFileURL.path
         var out: [Track] = []
@@ -158,9 +154,7 @@ final class ArtworkLoader: @unchecked Sendable {
     }
 
     private func memoryKey(_ trackID: String, _ bucket: Int) -> String {
-        lock.lock()
-        let rev = revisions[trackID] ?? 0
-        lock.unlock()
+        let rev = lock.withLock { revisions[trackID] ?? 0 }
         return "\(trackID)|\(bucket)|\(rev)"
     }
 
@@ -171,9 +165,7 @@ final class ArtworkLoader: @unchecked Sendable {
 
     /// Обложка трека изменилась (записаны теги).
     func invalidate(trackID: String) {
-        lock.lock()
-        revisions[trackID, default: 0] += 1
-        lock.unlock()
+        lock.withLock { revisions[trackID, default: 0] += 1 }
     }
 
     /// Удаляет из кэша файлы, которые не обновлялись больше 60 дней (обложки, логотипы радио, тексты, списки станций).
@@ -197,21 +189,16 @@ final class ArtworkLoader: @unchecked Sendable {
         let mKey = memoryKey(track.id, bucket)
         if let hit = cache.object(forKey: mKey as NSString) { return hit }
 
-        lock.lock()
-        if let running = inFlight[mKey] {
-            lock.unlock()
-            return await running.value
+        let (task, isNew) = lock.withLock { () -> (Task<UIImage?, Never>, Bool) in
+            if let running = inFlight[mKey] { return (running, false) }
+            let t = Task<UIImage?, Never>.detached(priority: .userInitiated) { [self] in
+                await self.load(track: track, url: url, bucket: bucket, memoryKey: mKey)
+            }
+            inFlight[mKey] = t
+            return (t, true)
         }
-        let task = Task<UIImage?, Never>.detached(priority: .userInitiated) { [self] in
-            await self.load(track: track, url: url, bucket: bucket, memoryKey: mKey)
-        }
-        inFlight[mKey] = task
-        lock.unlock()
-
         let result = await task.value
-        lock.lock()
-        inFlight[mKey] = nil
-        lock.unlock()
+        if isNew { lock.withLock { inFlight[mKey] = nil } }
         return result
     }
 
@@ -219,7 +206,7 @@ final class ArtworkLoader: @unchecked Sendable {
         // Дата изменения файла входит в ключ на диске: после правки тегов обложка обновится сама.
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
-        let name = Self.hash("\(track.id)|\(bucket)|\(Int(modified))")
+        let name = stableFileHash("\(track.id)|\(bucket)|\(Int(modified))")
         let file = diskDir.appendingPathComponent(name + ".jpg")
         let noArt = diskDir.appendingPathComponent(name + ".none")
         if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
@@ -253,24 +240,14 @@ final class ArtworkLoader: @unchecked Sendable {
         let cost = Int(img.size.width * img.scale * img.size.height * img.scale * 4)
         cache.setObject(img, forKey: key as NSString, cost: cost)
     }
-
-    static func hash(_ s: String) -> String {
-        var h: UInt64 = 1469598103934665603
-        for b in s.utf8 {
-            h ^= UInt64(b)
-            h = h &* 1099511628211
-        }
-        return String(h, radix: 36)
-    }
 }
 
 // MARK: - Хранилище библиотеки
 
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private(set) var folders: [MusicFolder] = []
     @Published private(set) var tracks: [Track] = [] {
-        didSet { rebuildGroups() }
+        didSet { scheduleRebuild() }
     }
     @Published private(set) var albums: [Album] = []
     @Published private(set) var artists: [Artist] = []
@@ -286,8 +263,9 @@ final class LibraryStore: ObservableObject {
     private(set) var byID: [String: Track] = [:]
 
     static let localID = "local"
-    private var roots: [String: URL] = [:]
+    private let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var scanning = false
+    private var groupGeneration = 0
 
     /// Папка «Музыка» в «Файлах».
     var musicFolderURL: URL {
@@ -300,17 +278,25 @@ final class LibraryStore: ObservableObject {
         try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
         return u
     }
-    private var foldersFile: URL { supportDir.appendingPathComponent("folders.json") }
     private var tracksFile: URL { supportDir.appendingPathComponent("tracks.json") }
 
     init() {
-        load()
-        resolveFolders()
-        Task { await rescan() }
+        // Сохранённая медиатека читается не на главном потоке, затем идёт сканирование.
+        isScanning = true
+        let file = tracksFile
+        Task {
+            let saved = await Task.detached(priority: .userInitiated) { () -> [Track] in
+                guard let data = try? Data(contentsOf: file),
+                      let t = try? JSONDecoder().decode([Track].self, from: data) else { return [] }
+                return t
+            }.value
+            if self.tracks.isEmpty, !saved.isEmpty { self.tracks = saved }
+            await self.rescan()
+        }
     }
 
     func url(for track: Track) -> URL? {
-        guard let root = roots[track.folderID] else { return nil }
+        guard track.folderID == Self.localID else { return nil }
         return track.relativePath.isEmpty ? root : root.appendingPathComponent(track.relativePath)
     }
 
@@ -340,22 +326,14 @@ final class LibraryStore: ObservableObject {
             if isScanning { isScanning = false }
         }
 
-        let existing = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var sources: [(String, URL, Bool)] = []
-        if let docs = roots[Self.localID] { sources.append((Self.localID, docs, false)) }
-        for f in folders {
-            if let u = roots[f.id] { sources.append((f.id, u, f.isFile == true)) }
-        }
-
-        let firstLoad = tracks.isEmpty
-        var all: [Track] = []
-        for (id, url, isFile) in sources {
-            let found = await LibraryScanner.scan(folderID: id, root: url, isFile: isFile, existing: existing)
-            all.append(contentsOf: found)
-            // При самом первом сканировании показываем песни по мере нахождения.
-            if firstLoad && !found.isEmpty { tracks = all }
-        }
-        all.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        let existing = byID.isEmpty
+            ? Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            : byID
+        let found = await LibraryScanner.scan(folderID: Self.localID, root: root, existing: existing)
+        // Сортировка не на главном потоке.
+        let all = await Task.detached(priority: .userInitiated) {
+            found.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.value
         if all != tracks {
             tracks = all
             saveTracks()
@@ -364,25 +342,32 @@ final class LibraryStore: ObservableObject {
 
     // Служебное
 
-    private func resolveFolders() {
-        roots[Self.localID] = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        for folder in folders {
-            var stale = false
-            guard let url = try? URL(resolvingBookmarkData: folder.bookmark, options: [],
-                                     relativeTo: nil, bookmarkDataIsStale: &stale),
-                  url.startAccessingSecurityScopedResource() else { continue }
-            roots[folder.id] = url
-            if stale, let fresh = try? url.bookmarkData(),
-               let i = folders.firstIndex(where: { $0.id == folder.id }) {
-                folders[i].bookmark = fresh
-                saveFolders()
-            }
+    /// Альбомы и исполнители пересобираются не на главном потоке.
+    /// Если медиатека успела измениться ещё раз, устаревший результат отбрасывается.
+    private func scheduleRebuild() {
+        groupGeneration += 1
+        let gen = groupGeneration
+        let snapshot = tracks
+        Task {
+            let g = await Task.detached(priority: .userInitiated) {
+                LibraryStore.computeGroups(snapshot)
+            }.value
+            guard gen == self.groupGeneration else { return }
+            self.byID = g.byID
+            self.trackIDs = Set(g.byID.keys)
+            self.albums = g.albums
+            self.artists = g.artists
         }
     }
 
-    private func rebuildGroups() {
-        byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        trackIDs = Set(byID.keys)
+    private struct Groups: Sendable {
+        let byID: [String: Track]
+        let albums: [Album]
+        let artists: [Artist]
+    }
+
+    nonisolated private static func computeGroups(_ tracks: [Track]) -> Groups {
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var buckets: [String: [Track]] = [:]
         for t in tracks {
             let key: String
@@ -394,7 +379,7 @@ final class LibraryStore: ObservableObject {
             }
             buckets[key, default: []].append(t)
         }
-        albums = buckets.map { key, group -> Album in
+        let albums = buckets.map { key, group -> Album in
             let sorted = group.sorted {
                 let a = $0.relativePath.isEmpty ? $0.title : $0.relativePath
                 let b = $1.relativePath.isEmpty ? $1.title : $1.relativePath
@@ -405,23 +390,15 @@ final class LibraryStore: ObservableObject {
             return Album(id: key, title: sorted[0].album, artist: artist, tracks: sorted)
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
 
-        artists = Dictionary(grouping: tracks, by: { $0.artist }).map { name, group -> Artist in
-            let sorted = group.sorted {
-                ($0.album + $0.title).localizedStandardCompare($1.album + $1.title) == .orderedAscending
-            }
+        let artists = Dictionary(grouping: tracks, by: { $0.artist }).map { name, group -> Artist in
+            // Ключ сортировки собирается один раз на трек, а не на каждое сравнение.
+            let sorted = group.map { ($0.album + "\u{1}" + $0.title, $0) }
+                .sorted { $0.0.localizedStandardCompare($1.0) == .orderedAscending }
+                .map { $0.1 }
             return Artist(id: name, name: name, tracks: sorted)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
 
-    private func load() {
-        if let data = try? Data(contentsOf: foldersFile),
-           let f = try? JSONDecoder().decode([MusicFolder].self, from: data) { folders = f }
-        if let data = try? Data(contentsOf: tracksFile),
-           let t = try? JSONDecoder().decode([Track].self, from: data) { tracks = t }
-    }
-
-    private func saveFolders() {
-        if let data = try? JSONEncoder().encode(folders) { try? data.write(to: foldersFile, options: .atomic) }
+        return Groups(byID: byID, albums: albums, artists: artists)
     }
 
     private func saveTracks() {
