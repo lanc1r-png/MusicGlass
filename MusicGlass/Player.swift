@@ -71,7 +71,8 @@ final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate
         Task { [weak self] in
             if let s = try? await item.load(.stringValue) {
                 let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty { self?.onTitle?(t) }
+                // Колбэк читается и вызывается только на главном потоке.
+                if !t.isEmpty { await MainActor.run { self?.onTitle?(t) } }
             }
         }
     }
@@ -82,7 +83,12 @@ final class PlayerStore: ObservableObject {
     @Published private(set) var queue: [Track] = [] { didSet { syncStatus() } }
     @Published private(set) var currentIndex: Int? { didSet { syncStatus() } }
     @Published private(set) var isPlaying = false { didSet { syncStatus() } }
-    @Published private(set) var artwork: UIImage?
+    @Published private(set) var artwork: UIImage? {
+        // Картинка для экрана блокировки создаётся один раз на обложку, а не при каждой паузе.
+        didSet { lockScreenArtwork = artwork.map { Self.makeArtwork($0) } }
+    }
+    private var lockScreenArtwork: MPMediaItemArtwork?
+    private var artworkTask: Task<Void, Never>?
     @Published private(set) var shuffleOn = false
     @Published var repeatMode: RepeatMode = .off {
         didSet { cancelPrepared() }
@@ -433,7 +439,9 @@ final class PlayerStore: ObservableObject {
 
     private func loadArtwork(for track: Track, localURL: URL?) {
         let isRadio = RadioID.isRadio(track)
-        Task {
+        // При быстром листании прошлая загрузка отменяется.
+        artworkTask?.cancel()
+        artworkTask = Task {
             let img: UIImage?
             if let localURL {
                 img = await ArtworkLoader.shared.image(for: track, url: localURL, maxSize: 900)
@@ -446,7 +454,7 @@ final class PlayerStore: ObservableObject {
             } else {
                 img = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkLarge)
             }
-            if self.currentTrack?.id == track.id {
+            if !Task.isCancelled, self.currentTrack?.id == track.id {
                 self.artwork = img
                 self.updateNowPlaying()
             }
@@ -553,8 +561,9 @@ final class PlayerStore: ObservableObject {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
+            // Колбэк уже приходит на главный поток, лишний переход не нужен.
             let seconds = time.seconds
-            Task { @MainActor in self?.tick(seconds) }
+            MainActor.assumeIsolated { self?.tick(seconds) }
         }
         timeObserverOwner = player
     }
@@ -595,6 +604,8 @@ final class PlayerStore: ObservableObject {
         guard !isLive else { return }
         if let d = player.currentItem?.duration.seconds, d.isFinite, d > 0, abs(d - clock.duration) > 1 {
             clock.duration = d
+            // Уточнённая длина сразу уходит на экран блокировки.
+            updateNowPlaying()
         }
         guard isPlaying, !fading else { return }
         let d = clock.duration
@@ -691,8 +702,8 @@ final class PlayerStore: ObservableObject {
                 MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
             ]
         }
-        if let art = artwork {
-            info[MPMediaItemPropertyArtwork] = Self.makeArtwork(art)
+        if let art = lockScreenArtwork {
+            info[MPMediaItemPropertyArtwork] = art
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
