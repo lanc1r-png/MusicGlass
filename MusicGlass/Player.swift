@@ -60,7 +60,7 @@ enum PlaybackSettings {
 }
 
 /// Читает название песни, которое радиостанция передаёт в потоке (ICY).
-final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate {
+final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate, @unchecked Sendable {
     var onTitle: ((String) -> Void)?
 
     func metadataOutput(_ output: AVPlayerItemMetadataOutput,
@@ -68,11 +68,12 @@ final class LiveMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate
                         from track: AVPlayerItemTrack?) {
         guard let item = groups.flatMap({ $0.items })
             .first(where: { $0.identifier == .icyMetadataStreamTitle }) else { return }
-        Task { [weak self] in
+        let reader = self
+        Task {
             if let s = try? await item.load(.stringValue) {
                 let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Колбэк читается и вызывается только на главном потоке.
-                if !t.isEmpty { await MainActor.run { self?.onTitle?(t) } }
+                if !t.isEmpty { await MainActor.run { reader.onTitle?(t) } }
             }
         }
     }
@@ -116,6 +117,16 @@ final class PlayerStore: ObservableObject {
     private weak var timeObserverOwner: AVPlayer?
     private var endObserver: NSObjectProtocol?
     private var statusObserver: AnyCancellable?
+    /// Следит, играет ли плеер на самом деле (наушники отключили, сеть пропала).
+    private var controlObserver: AnyCancellable?
+    private var failObserver: NSObjectProtocol?
+    private var stallObserver: NSObjectProtocol?
+    private var stallTask: Task<Void, Never>?
+    private var retriedTrackID: String?
+    /// Точный старт следующего трека за долю секунды до конца текущего.
+    private var boundaryObserver: Any?
+    private weak var boundaryOwner: AVPlayer?
+    private var sessionActive = false
     private let metadataReader = LiveMetadataReader()
     private var metadataOutput: AVPlayerItemMetadataOutput?
 
@@ -160,6 +171,8 @@ final class PlayerStore: ObservableObject {
         configureAudioSession()
         setupRemoteCommands()
         observeInterruptions()
+        observeRouteChanges()
+        observeMediaReset()
         installTimeObserver()
     }
 
@@ -220,6 +233,12 @@ final class PlayerStore: ObservableObject {
 
     func resume() {
         guard currentTrack != nil else { return }
+        // Прямой эфир после паузы переподключаем: старый буфер устарел.
+        if isLive || player.currentItem == nil || player.currentItem?.status == .failed {
+            loadCurrent(autoplay: true)
+            return
+        }
+        activateSession()
         player.volume = 1
         player.play()
         isPlaying = true
@@ -376,6 +395,8 @@ final class PlayerStore: ObservableObject {
     private func loadCurrent(autoplay: Bool) {
         stopFade()
         cancelPrepared()
+        stallTask?.cancel()
+        if retriedTrackID != currentTrack?.id { retriedTrackID = nil }
         guard let track = currentTrack else {
             pause()
             return
@@ -413,6 +434,7 @@ final class PlayerStore: ObservableObject {
         clock.duration = track.duration
         artwork = nil
         if autoplay {
+            activateSession()
             player.play()
             isPlaying = true
         }
@@ -434,6 +456,49 @@ final class PlayerStore: ObservableObject {
             forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.trackEnded() }
+        }
+
+        // Обрыв посередине трека или эфира (сеть пропала).
+        if let o = failObserver { NotificationCenter.default.removeObserver(o) }
+        failObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.recoverOrFail(message: message) }
+        }
+
+        // Плеер «застрял» в ожидании данных.
+        if let o = stallObserver { NotificationCenter.default.removeObserver(o) }
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.watchStall(message: message) }
+        }
+    }
+
+    /// Один раз пробуем переподключиться с того же места, иначе сообщаем об ошибке.
+    private func recoverOrFail(message: String) {
+        guard let t = currentTrack else { return }
+        if retriedTrackID == t.id || RadioID.isRadio(t) == false && library?.url(for: t) != nil {
+            // Локальный файл переподключать бессмысленно.
+            handleFailure(message: message)
+            return
+        }
+        retriedTrackID = t.id
+        let position = clock.currentTime
+        loadCurrent(autoplay: true)
+        retriedTrackID = t.id
+        if !isLive, position > 1 { seek(to: position) }
+    }
+
+    /// Если данные не пришли за 15 секунд, переподключаемся или сообщаем об ошибке.
+    private func watchStall(message: String) {
+        stallTask?.cancel()
+        let id = currentTrack?.id
+        stallTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self, !Task.isCancelled, self.currentTrack?.id == id,
+                  self.isPlaying, self.player.timeControlStatus != .playing else { return }
+            self.recoverOrFail(message: message)
         }
     }
 
@@ -479,9 +544,33 @@ final class PlayerStore: ObservableObject {
         standby.volume = 0
         standby.pause()
         prepared = (ni, t.id)
+        installBoundary()
+    }
+
+    /// Без затухания следующий трек стартует за 60 мс до конца текущего,
+    /// а не после события «трек закончился» — так не слышно паузы.
+    private func installBoundary() {
+        removeBoundary()
+        let d = clock.duration
+        guard crossfade == 0, d > 2 else { return }
+        let time = CMTime(seconds: d - 0.06, preferredTimescale: 600)
+        boundaryObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: time)], queue: .main) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isPlaying, !self.fading else { return }
+                _ = self.transitionToPrepared(fade: 0)
+            }
+        }
+        boundaryOwner = player
+    }
+
+    private func removeBoundary() {
+        if let b = boundaryObserver { boundaryOwner?.removeTimeObserver(b) }
+        boundaryObserver = nil
+        boundaryOwner = nil
     }
 
     private func cancelPrepared() {
+        removeBoundary()
         guard prepared != nil else { return }
         prepared = nil
         if !fading {
@@ -498,6 +587,9 @@ final class PlayerStore: ObservableObject {
             return false
         }
         let track = queue[p.index]
+        removeBoundary()
+        stallTask?.cancel()
+        retriedTrackID = nil
         let old = player
         player = standby
         standby = old
@@ -515,6 +607,7 @@ final class PlayerStore: ObservableObject {
         clock.currentTime = 0
         clock.duration = track.duration
         player.volume = fade > 0 ? 0 : 1
+        activateSession()
         player.play()
         isPlaying = true
         artwork = nil
@@ -537,8 +630,13 @@ final class PlayerStore: ObservableObject {
                 self?.stopFade()
             }
         } else {
-            old.pause()
-            old.replaceCurrentItem(with: nil)
+            // Старый трек дозвучивает последние миллисекунды и выключается.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self, self.standby === old, self.prepared == nil, !self.fading else { return }
+                old.pause()
+                old.replaceCurrentItem(with: nil)
+            }
         }
         return true
     }
@@ -566,6 +664,22 @@ final class PlayerStore: ObservableObject {
             MainActor.assumeIsolated { self?.tick(seconds) }
         }
         timeObserverOwner = player
+
+        // Если система остановила звук сама (отключили наушники, прервал звонок,
+        // пропала сеть надолго), приложение и экран блокировки тоже показывают паузу.
+        controlObserver = player.publisher(for: \.timeControlStatus)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                MainActor.assumeIsolated {
+                    guard let self, status == .paused, self.isPlaying, !self.fading else { return }
+                    // Конец трека обрабатывается отдельно (следующий трек / повтор).
+                    if let item = self.player.currentItem,
+                       item.duration.seconds.isFinite,
+                       item.currentTime().seconds >= item.duration.seconds - 0.5 { return }
+                    self.isPlaying = false
+                    self.updateNowPlaying()
+                }
+            }
     }
 
     // MARK: Внутреннее
@@ -618,10 +732,50 @@ final class PlayerStore: ObservableObject {
         }
     }
 
+    /// При запуске только выбирается режим «музыка»; сессия включается при первом воспроизведении,
+    /// чтобы открытие приложения не глушило чужой звук.
     private func configureAudioSession() {
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default)
-        try? s.setActive(true)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+    }
+
+    private func activateSession() {
+        guard !sessionActive else { return }
+        sessionActive = (try? AVAudioSession.sharedInstance().setActive(true)) != nil
+    }
+
+    /// Наушники или AirPods отключили: ставим паузу, как Apple Music.
+    private func observeRouteChanges() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+            Task { @MainActor in
+                guard let self, self.isPlaying else { return }
+                self.pause()
+            }
+        }
+    }
+
+    /// Редкий сбой аудиосистемы iOS: пересоздаём плееры и сессию, трек остаётся на паузе.
+    private func observeMediaReset() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.stopFade()
+                self.removeBoundary()
+                self.prepared = nil
+                self.player = AVPlayer()
+                self.standby = AVPlayer()
+                self.sessionActive = false
+                self.configureAudioSession()
+                self.installTimeObserver()
+                self.isPlaying = false
+                if self.currentTrack != nil { self.loadCurrent(autoplay: false) }
+            }
+        }
     }
 
     private func observeInterruptions() {
@@ -635,7 +789,9 @@ final class PlayerStore: ObservableObject {
                 guard let self else { return }
                 if type == .began {
                     self.stopFade()
+                    self.player.pause()
                     self.isPlaying = false
+                    self.sessionActive = false
                     self.updateNowPlaying()
                 } else if AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
                     self.resume()
