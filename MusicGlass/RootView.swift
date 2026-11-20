@@ -98,18 +98,43 @@ struct ArtworkView: View {
     var corner: CGFloat = 8
     var maxPixels: CGFloat = 200
     @State private var image: UIImage?
+    @State private var shownTrackID: String?
+
+    init(track: Track?, corner: CGFloat = 8, maxPixels: CGFloat = 200) {
+        self.track = track
+        self.corner = corner
+        self.maxPixels = maxPixels
+        // Если обложка уже в памяти, показываем её сразу, без кадра с заглушкой.
+        let hit = track.flatMap { ArtworkLoader.shared.cached(for: $0, maxSize: maxPixels) }
+        _image = State(initialValue: hit)
+        _shownTrackID = State(initialValue: hit == nil ? nil : track?.id)
+    }
 
     var body: some View {
         ArtworkImage(image: image, corner: corner)
-            .task(id: "\(track?.id ?? "")|\(library.artworkVersion)") {
-                image = nil
-                guard let track else { return }
-                if OnlineID.isOnline(track) {
-                    image = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkMedium)
+            .task(id: "\(track?.id ?? "")|\(track.map { library.artworkRevision(for: $0.id) } ?? 0)") {
+                guard let track else {
+                    image = nil
                     return
                 }
+                if OnlineID.isOnline(track) {
+                    if shownTrackID != track.id { image = nil }
+                    image = await OnlineArtwork.image(OnlineCatalog.shared.info(for: track)?.artworkMedium)
+                    shownTrackID = track.id
+                    return
+                }
+                if let hit = ArtworkLoader.shared.cached(for: track, maxSize: maxPixels) {
+                    image = hit
+                    shownTrackID = track.id
+                    return
+                }
+                // Заглушку показываем только если сменился сам трек.
+                if shownTrackID != track.id { image = nil }
                 guard let url = library.url(for: track) else { return }
-                image = await ArtworkLoader.shared.image(for: track, url: url, maxSize: maxPixels)
+                let img = await ArtworkLoader.shared.image(for: track, url: url, maxSize: maxPixels)
+                if Task.isCancelled { return }
+                image = img
+                shownTrackID = track.id
             }
     }
 }

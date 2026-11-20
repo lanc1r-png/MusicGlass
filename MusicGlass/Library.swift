@@ -129,7 +129,18 @@ enum LibraryScanner {
 
 final class ArtworkLoader: @unchecked Sendable {
     static let shared = ArtworkLoader()
-    private let cache = NSCache<NSString, UIImage>()
+
+    /// Кэш в памяти с лимитом (~80 МБ), стоимость — объём картинки в байтах.
+    private let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.totalCostLimit = 80 * 1024 * 1024
+        return c
+    }()
+    private let lock = NSLock()
+    /// Номер правки обложки для каждого трека: после записи тегов меняется только он.
+    private var revisions: [String: Int] = [:]
+    /// Запросы, которые уже идут: одна и та же обложка не декодируется дважды.
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
 
     /// Готовые уменьшенные обложки на диске: после перезапуска не нужно снова читать их из файлов.
     private let diskDir: URL = {
@@ -139,8 +150,30 @@ final class ArtworkLoader: @unchecked Sendable {
         return d
     }()
 
-    func clear() {
-        cache.removeAllObjects()
+    /// Несколько размеров сводятся к трём, чтобы одна обложка не хранилась в семи вариантах.
+    static func bucket(_ maxSize: CGFloat) -> Int {
+        if maxSize <= 200 { return 200 }
+        if maxSize <= 600 { return 600 }
+        return 1000
+    }
+
+    private func memoryKey(_ trackID: String, _ bucket: Int) -> String {
+        lock.lock()
+        let rev = revisions[trackID] ?? 0
+        lock.unlock()
+        return "\(trackID)|\(bucket)|\(rev)"
+    }
+
+    /// Мгновенная проверка памяти без обращения к диску (чтобы обложка не мигала заглушкой).
+    func cached(for track: Track, maxSize: CGFloat) -> UIImage? {
+        cache.object(forKey: memoryKey(track.id, Self.bucket(maxSize)) as NSString)
+    }
+
+    /// Обложка трека изменилась (записаны теги).
+    func invalidate(trackID: String) {
+        lock.lock()
+        revisions[trackID, default: 0] += 1
+        lock.unlock()
     }
 
     /// Удаляет из кэша файлы, которые не обновлялись больше 60 дней (обложки, логотипы радио, тексты, списки станций).
@@ -160,43 +193,68 @@ final class ArtworkLoader: @unchecked Sendable {
     }
 
     func image(for track: Track, url: URL, maxSize: CGFloat) async -> UIImage? {
-        // Дата изменения файла входит в ключ: после правки тегов обложка обновится сама.
+        let bucket = Self.bucket(maxSize)
+        let mKey = memoryKey(track.id, bucket)
+        if let hit = cache.object(forKey: mKey as NSString) { return hit }
+
+        lock.lock()
+        if let running = inFlight[mKey] {
+            lock.unlock()
+            return await running.value
+        }
+        let task = Task<UIImage?, Never>.detached(priority: .userInitiated) { [self] in
+            await self.load(track: track, url: url, bucket: bucket, memoryKey: mKey)
+        }
+        inFlight[mKey] = task
+        lock.unlock()
+
+        let result = await task.value
+        lock.lock()
+        inFlight[mKey] = nil
+        lock.unlock()
+        return result
+    }
+
+    private func load(track: Track, url: URL, bucket: Int, memoryKey: String) async -> UIImage? {
+        // Дата изменения файла входит в ключ на диске: после правки тегов обложка обновится сама.
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
-        let keyString = "\(track.id)|\(Int(maxSize))|\(Int(modified))"
-        let key = keyString as NSString
-        if let hit = cache.object(forKey: key) { return hit }
-
-        let name = Self.hash(keyString)
+        let name = Self.hash("\(track.id)|\(bucket)|\(Int(modified))")
         let file = diskDir.appendingPathComponent(name + ".jpg")
         let noArt = diskDir.appendingPathComponent(name + ".none")
         if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
             let ready = await img.byPreparingForDisplay() ?? img
-            cache.setObject(ready, forKey: key)
+            store(ready, memoryKey)
             return ready
         }
         if FileManager.default.fileExists(atPath: noArt.path) { return nil }
 
         let asset = AVURLAsset(url: url)
-        guard let items = try? await asset.load(.commonMetadata),
-              let item = AVMetadataItem.metadataItems(from: items, filteredByIdentifier: .commonIdentifierArtwork).first,
+        // Если теги прочитать не удалось (временный сбой), метку «обложки нет» не ставим.
+        guard let items = try? await asset.load(.commonMetadata) else { return nil }
+        guard let item = AVMetadataItem.metadataItems(from: items, filteredByIdentifier: .commonIdentifierArtwork).first,
               let data = try? await item.load(.dataValue),
               let full = UIImage(data: data) else {
             FileManager.default.createFile(atPath: noArt.path, contents: Data())
             return nil
         }
         let longest = max(full.size.width, full.size.height)
-        let scale = min(1, maxSize / max(longest, 1))
+        let scale = min(1, CGFloat(bucket) / max(longest, 1))
         let target = CGSize(width: full.size.width * scale, height: full.size.height * scale)
         let thumb = await full.byPreparingThumbnail(ofSize: target) ?? full
-        cache.setObject(thumb, forKey: key)
+        store(thumb, memoryKey)
         if let jpg = thumb.jpegData(compressionQuality: 0.85) {
             try? jpg.write(to: file, options: .atomic)
         }
         return thumb
     }
 
-    private static func hash(_ s: String) -> String {
+    private func store(_ img: UIImage, _ key: String) {
+        let cost = Int(img.size.width * img.scale * img.size.height * img.scale * 4)
+        cache.setObject(img, forKey: key as NSString, cost: cost)
+    }
+
+    static func hash(_ s: String) -> String {
         var h: UInt64 = 1469598103934665603
         for b in s.utf8 {
             h ^= UInt64(b)
@@ -218,7 +276,10 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var artists: [Artist] = []
     /// Показывается только при первом сканировании или когда пользователь сам нажал «Обновить».
     @Published private(set) var isScanning = false
-    @Published private(set) var artworkVersion = 0
+    /// Номер правки обложки по трекам: после записи тегов обновляется только обложка этого трека.
+    @Published private(set) var artworkRevisions: [String: Int] = [:]
+
+    func artworkRevision(for trackID: String) -> Int { artworkRevisions[trackID] ?? 0 }
 
     /// Быстрый доступ к трекам по id (для избранного и своих категорий).
     private(set) var trackIDs: Set<String> = []
@@ -261,7 +322,8 @@ final class LibraryStore: ObservableObject {
         if !artist.isEmpty { t.artist = artist }
         if !album.isEmpty { t.album = album }
         tracks[i] = t
-        artworkVersion += 1
+        ArtworkLoader.shared.invalidate(trackID: trackID)
+        artworkRevisions[trackID, default: 0] += 1
         saveTracks()
     }
 

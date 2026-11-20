@@ -305,7 +305,6 @@ struct TagEditorView: View {
             try await Task.detached(priority: .userInitiated) {
                 try ID3Writer.write(toWrite, to: url)
             }.value
-            ArtworkLoader.shared.clear()
             library.applyMetadata(
                 trackID: track.id,
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
