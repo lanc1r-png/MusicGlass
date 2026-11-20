@@ -85,9 +85,8 @@ struct MiniPlayer: View {
                 withAnimation(.easeOut(duration: 0.4)) { tint = nil }
                 return
             }
-            let colors = await Task.detached(priority: .utility) {
-                ArtPalette.colors(from: art, count: 1)
-            }.value
+            let colors = await PaletteCache.shared.colors(for: player.currentTrack?.id, image: art)
+            if Task.isCancelled { return }
             withAnimation(.easeInOut(duration: 0.6)) {
                 tint = colors.first.map { Color(uiColor: $0) }
             }

@@ -261,9 +261,7 @@ struct AlbumDetailView: View {
     private func loadTint() async {
         guard let t = album.tracks.first, let url = library.url(for: t) else { return }
         guard let img = await ArtworkLoader.shared.image(for: t, url: url, maxSize: 200) else { return }
-        let colors = await Task.detached(priority: .userInitiated) {
-            ArtPalette.colors(from: img, count: 1)
-        }.value
+        let colors = await PaletteCache.shared.colors(for: t.id, image: img)
         if let c = colors.first {
             withAnimation(.easeInOut(duration: 0.6)) {
                 tint = Color(uiColor: c)

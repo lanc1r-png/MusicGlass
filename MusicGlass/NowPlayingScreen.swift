@@ -20,9 +20,8 @@ struct NowPlayingScreen: View {
 
     private var fg: Color { scheme == .dark ? .white : .black }
 
-    private var paletteKey: String {
-        palette.map { $0.description }.joined(separator: "|")
-    }
+    /// Ключ палитры считается один раз при смене цветов, а не при каждой перерисовке.
+    @State private var paletteKey = ""
 
     private var trackKey: String {
         "\(player.currentTrack?.id ?? "")|\(player.artwork != nil)"
@@ -101,13 +100,16 @@ struct NowPlayingScreen: View {
     private func updatePalette() async {
         guard let art = player.artwork else {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            if !Task.isCancelled { palette = [] }
+            if !Task.isCancelled {
+                palette = []
+                paletteKey = ""
+            }
             return
         }
-        let colors = await Task.detached(priority: .userInitiated) {
-            ArtPalette.colors(from: art)
-        }.value
+        let colors = await PaletteCache.shared.colors(for: player.currentTrack?.id, image: art)
+        if Task.isCancelled { return }
         palette = colors
+        paletteKey = player.currentTrack?.id ?? UUID().uuidString
     }
 
     // Обложка
@@ -647,6 +649,27 @@ struct MeshArtBackground: View {
 }
 
 // MARK: - Палитра из обложки
+
+/// Цвета обложки считаются один раз на трек: экран плеера, мини-плеер и альбом берут готовое.
+@MainActor
+final class PaletteCache {
+    static let shared = PaletteCache()
+    private var store: [String: [UIColor]] = [:]
+    private var order: [String] = []
+
+    func colors(for key: String?, image: UIImage) async -> [UIColor] {
+        if let key, let hit = store[key] { return hit }
+        let colors = await Task.detached(priority: .userInitiated) {
+            ArtPalette.colors(from: image, count: 4)
+        }.value
+        if let key {
+            store[key] = colors
+            order.append(key)
+            if order.count > 300 { store[order.removeFirst()] = nil }
+        }
+        return colors
+    }
+}
 
 enum ArtPalette {
     /// Приглушает цвет под тему: в тёмной темнее, в светлой ближе к белому.
