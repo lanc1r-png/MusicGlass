@@ -166,25 +166,28 @@ enum LyricsService {
 // MARK: - Экран текста
 
 struct LyricsPanel: View {
-    @EnvironmentObject var player: PlayerStore
+    @Environment(\.playerControl) private var player
+    @ObservedObject private var status = PlaybackStatus.shared
     @EnvironmentObject var library: LibraryStore
-    @ObservedObject var clock: PlayerClock
+    /// Время не наблюдается напрямую: экран обновляется только при смене строки.
+    let clock: PlayerClock
     let fg: Color
 
     @State private var lyrics: Lyrics?
     @State private var loading = true
     @State private var userScrolling = false
+    @State private var currentLine: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var currentLine: Int? {
+    private func line(at time: Double) -> Int? {
         guard let l = lyrics, l.synced else { return nil }
-        let t = clock.currentTime + 0.35
+        let t = time + 0.35
         return l.lines.lastIndex { ($0.time ?? .infinity) <= t }
     }
 
     var body: some View {
         Group {
-            if player.isLive {
+            if status.currentID.map({ $0.hasPrefix(RadioID.prefix) }) ?? false {
                 message("Для радио тексты недоступны", icon: "dot.radiowaves.left.and.right")
             } else if loading {
                 ProgressView().tint(fg).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -196,13 +199,18 @@ struct LyricsPanel: View {
                 message("Текст не найден", icon: "quote.bubble")
             }
         }
-        .task(id: player.currentTrack?.id) { await load() }
+        .task(id: status.currentID) { await load() }
+        .onReceive(clock.$currentTime) { t in
+            let c = line(at: t)
+            if c != currentLine { currentLine = c }
+        }
     }
 
     private func load() async {
         loading = true
         lyrics = nil
-        guard let t = player.currentTrack, !RadioID.isRadio(t) else {
+        currentLine = nil
+        guard let t = player?.currentTrack, !RadioID.isRadio(t) else {
             loading = false
             return
         }
@@ -213,6 +221,7 @@ struct LyricsPanel: View {
             lyrics = l
             loading = false
         }
+        currentLine = line(at: clock.currentTime)
     }
 
     private func lines(_ l: Lyrics) -> some View {
@@ -262,7 +271,10 @@ struct LyricsPanel: View {
         Text(text)
             .font(.system(size: synced ? 28 : 22, weight: .bold))
             .foregroundStyle(fg.opacity(!synced ? 0.85 : (isCurrent ? 1 : 0.32)))
-            .blur(radius: synced && !isCurrent && !userScrolling && !reduceMotion ? min(Double(distance) * 0.6, 2.4) : 0)
+            // Размываются только ближайшие строки: дальние и так почти не видны,
+            // а размытие каждой строки — лишняя работа для видеокарты.
+            .blur(radius: synced && !isCurrent && !userScrolling && !reduceMotion && distance <= 3
+                  ? Double(distance) * 0.6 : 0)
             .scaleEffect(isCurrent || reduceMotion ? 1.0 : 0.97, anchor: .leading)
             .animation(.spring(response: 0.45, dampingFraction: 0.8), value: isCurrent)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,7 +282,7 @@ struct LyricsPanel: View {
             .onTapGesture {
                 if let t = line.time {
                     Haptics.tap()
-                    player.seek(to: t)
+                    player?.seek(to: t)
                 }
             }
     }
